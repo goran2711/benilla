@@ -17,6 +17,9 @@ fn spell_tooltip_view(
 
 /// A view context with no player state, the DBC-only half of the builder.
 pub(super) struct TestCtx {
+    /// The active player's gender the `$g`/`$G` branches read (`0x508214`), as the closure the
+    /// views take; a test sets the value through [`TestCtx::set_gender`].
+    gender_of: Box<dyn Fn() -> u8>,
     pub(super) items: Items,
     pub(super) commands: NetCommands,
     _rx: crossbeam_channel::Receiver<crate::net::ClientCommand>,
@@ -40,6 +43,7 @@ impl TestCtx {
             items: Items::default(),
             commands: NetCommands(tx),
             _rx: rx,
+            gender_of: Box::new(|| 0),
             get: Box::new(move |key| benilla_ui::strings::global(vm.lua(), key)),
             spell_mods: crate::spell::SpellModifiers::default(),
             skill_lines: None,
@@ -66,6 +70,12 @@ impl TestCtx {
         ctx
     }
 
+    /// The gender the `$g`/`$G` branches read: the test player's, not the store's — a test's
+    /// `store` may hold no gender byte at all.
+    pub(super) fn set_gender(&mut self, gender: u8) {
+        self.gender_of = Box::new(move || gender);
+    }
+
     pub(super) fn ctx_for<'a, 'w, 's>(
         &'a mut self,
         objects: &'a Objects<'w, 's>,
@@ -76,6 +86,7 @@ impl TestCtx {
         ViewCtx {
             home_area: None,
             form,
+            gender_of: &*self.gender_of,
             store,
             caster: ViewCaster::Player,
             range_caster: benilla_formats::RangeUnit::still(
@@ -218,6 +229,73 @@ fn a_pet_view_costs_seduction_from_the_pets_base_mana() {
     let v = spell_tooltip_view(6358, &spells, &mut t.pet_ctx(&objects, Some(&player), None))
         .expect("Seduction view");
     assert_eq!(v.cost, None);
+}
+
+/// The `$g`/`$G` branch (`0x508180`) reads the active player's `UNIT_FIELD_BYTES_0` byte 2
+/// (`0x508214`): the first form on 0, the second on anything else. A female player's Conjure Food
+/// and Water (587, 5504) tooltips read "her allies" and Hellfire (1949) "to herself", where the
+/// shipped male spellbook shows the first form.
+#[test]
+fn a_female_players_spell_tooltips_take_the_second_gender_form() {
+    let Some(spells) = real_spells() else { return };
+    let mut t = TestCtx::new();
+    let mut objs = no_objects();
+    let objects = objs.get();
+    let player = ObjectStore(unit(60, 1373));
+    t.set_gender(1);
+    let mut view = |id: u32| {
+        spell_tooltip_view(
+            id,
+            &spells,
+            &mut t.ctx_for(&objects, 0, None, Some(&player)),
+        )
+        .unwrap_or_else(|| panic!("spell {id} view"))
+    };
+    for id in [587u32, 5504] {
+        assert!(
+            view(id).description.contains("the mage and her allies"),
+            "{id}: {}",
+            view(id).description
+        );
+    }
+    assert!(
+        view(1949).description.contains("Fire damage to herself"),
+        "{}",
+        view(1949).description
+    );
+    drop(view);
+    t.set_gender(0);
+    let mut view = |id: u32| {
+        spell_tooltip_view(
+            id,
+            &spells,
+            &mut t.ctx_for(&objects, 0, None, Some(&player)),
+        )
+        .unwrap_or_else(|| panic!("spell {id} view"))
+    };
+    for id in [587u32, 5504] {
+        assert!(
+            view(id).description.contains("the mage and his allies"),
+            "{id}: {}",
+            view(id).description
+        );
+    }
+    drop(view);
+    // The branch looks the active player up (`0x508189`-`0x5081a4`), so the pet's caster never
+    // changes it: a pet view still reads the player's gender.
+    t.set_gender(1);
+    let pet = unit(20, 0);
+    let her = spell_tooltip_view(
+        587,
+        &spells,
+        &mut t.pet_ctx(&objects, Some(&player), Some(&pet)),
+    )
+    .expect("Conjure Food view");
+    assert!(
+        her.description.contains("the mage and her allies"),
+        "{}",
+        her.description
+    );
 }
 
 /// An object index with nothing streamed: no worn item, and every reagent count 0.

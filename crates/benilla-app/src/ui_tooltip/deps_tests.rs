@@ -1265,6 +1265,7 @@ fn the_search_answers_the_same_wherever_the_watched_state_is_the_same() {
                         let mut vctx = ViewCtx {
                             home_area: None,
                             form: 0,
+                            gender_of: &|| 0,
                             store: Some(&store),
                             caster: ViewCaster::Player,
                             range_caster: RangeUnit::still(1.5),

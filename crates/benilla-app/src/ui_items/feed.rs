@@ -60,6 +60,8 @@ fn spell_desc_text(
     // The player's skill in a spell's line, the `$`-tokens' level (`TokenContext::skill`).
     skill: &dyn Fn(u32) -> u32,
     home_area: Option<&str>,
+    // The active player's `UNIT_FIELD_BYTES_0` byte 2, the `$g`/`$G` branch's input (`0x508214`).
+    gender: &dyn Fn() -> u8,
     mods: Option<&crate::spell::SpellModifiers>,
     // The VM's strings for the keyed `$d`/`$s` tokens.
     global: &dyn Fn(&str) -> Option<String>,
@@ -77,6 +79,7 @@ fn spell_desc_text(
                 lookup: &|i| sp.catalog.get(i),
                 mods: mods.map(|m| m as &dyn benilla_formats::SpellMods),
                 unmodified_points: false,
+                gender,
                 home_area: &|| home_area,
                 global,
                 printf: &crate::ui_script::token_printf,
@@ -137,6 +140,8 @@ fn template_view(
     skill: &dyn Fn(u32) -> u32,
     skill_lines: Option<&benilla_formats::SkillLineCatalog>,
     home_area: Option<&str>,
+    // The active player's gender byte, the trigger text's `$g`/`$G` branch (`0x508214`).
+    gender: &dyn Fn() -> u8,
     factions: Option<&benilla_formats::FactionCatalog>,
     sub_classes: Option<&benilla_formats::ItemSubClassCatalog>,
     classes: Option<&benilla_formats::ItemClassCatalog>,
@@ -150,7 +155,7 @@ fn template_view(
             .and_then(|s| s.catalog.get(id))
             .map(|sd| sd.name.clone())
     };
-    let spell_text = |id: u32| spell_desc_text(spells, id, skill, home_area, mods, get);
+    let spell_text = |id: u32| spell_desc_text(spells, id, skill, home_area, gender, mods, get);
     benilla_ui::script::ItemTemplateView {
         name: t.name.clone(),
         quality: t.quality,
@@ -308,8 +313,16 @@ pub(super) fn feed_item_sets(
                 .bonuses
                 .iter()
                 .filter_map(|&(n, spell)| {
-                    spell_desc_text(spell_res, spell, &skill, None, Some(&spell_mods), &global)
-                        .map(|desc| (n, desc))
+                    spell_desc_text(
+                        spell_res,
+                        spell,
+                        &skill,
+                        None,
+                        &|| me.and_then(|s| s.0.unit_gender()).unwrap_or(0),
+                        Some(&spell_mods),
+                        &global,
+                    )
+                    .map(|desc| (n, desc))
                 })
                 .collect(),
             required_skill: row.required_skill,
@@ -464,6 +477,7 @@ pub(super) fn feed_item_stats(
                         &skill,
                         skill_catalog,
                         home_area,
+                        &|| me.and_then(|s| s.0.unit_gender()).unwrap_or(0),
                         factions.as_deref().map(|f| f.catalog()),
                         sub_classes.as_deref().map(|s| &s.0),
                         classes.as_deref().map(|c| &c.0),
@@ -1907,13 +1921,11 @@ mod tests {
         assert_eq!(charges_count(&[slot(433, -1), slot(4057, -10)]), 10);
     }
 
-    /// On the real Spell.dbc, an undescribed spell such as a key's `Opening` builds no trigger
-    /// line (`0x52da29`-`0x52da31`), and a described one does.
-    #[test]
-    fn an_undescribed_spell_prints_no_trigger_line_on_real_data() {
-        let data = benilla_formats::wow_data_or_skip!();
+    /// The real spell rows; `None` skips where the install is absent.
+    fn real_spells() -> Option<crate::ui_action::Spells> {
+        let data = benilla_formats::wow_data_or_skip!(None);
         let mut chain = benilla_formats::open_chain(&data).expect("open chain");
-        let spells = crate::ui_action::Spells {
+        Some(crate::ui_action::Spells {
             catalog: benilla_formats::load_spell_catalog(&mut chain).expect("Spell.dbc"),
             forms: benilla_formats::load_shapeshift_forms(&mut chain)
                 .expect("SpellShapeshiftForm.dbc"),
@@ -1923,7 +1935,14 @@ mod tests {
             durations: benilla_formats::load_spell_durations(&mut chain)
                 .expect("SpellDuration.dbc"),
             radii: benilla_formats::load_spell_radii(&mut chain).expect("SpellRadius.dbc"),
-        };
+        })
+    }
+
+    /// On the real Spell.dbc, an undescribed spell such as a key's `Opening` builds no trigger
+    /// line (`0x52da29`-`0x52da31`), and a described one does.
+    #[test]
+    fn an_undescribed_spell_prints_no_trigger_line_on_real_data() {
+        let Some(spells) = real_spells() else { return };
 
         // No string table: Fireball's description reaches no keyed token.
         let no_strings = |_: &str| None;
@@ -1936,7 +1955,7 @@ mod tests {
                 "spell {id} has a name — which is exactly what must NOT leak into the tooltip"
             );
             assert_eq!(
-                super::spell_desc_text(Some(&spells), id, &|_| 0, None, None, &no_strings),
+                super::spell_desc_text(Some(&spells), id, &|_| 0, None, &|| 0, None, &no_strings),
                 None,
                 "spell {id} ({:?}) has no description, so the reference prints no trigger line",
                 d.name
@@ -1944,11 +1963,34 @@ mod tests {
         }
 
         // The control: Fireball (133), described, still yields its line.
-        let fireball = super::spell_desc_text(Some(&spells), 133, &|_| 0, None, None, &no_strings)
-            .expect("a described spell still yields its line");
+        let fireball =
+            super::spell_desc_text(Some(&spells), 133, &|_| 0, None, &|| 0, None, &no_strings)
+                .expect("a described spell still yields its line");
         assert!(
             fireball.contains("damage"),
             "expected the substituted Fireball description, got {fireball:?}"
         );
+    }
+
+    /// The trigger text's `$g` branch reads the gender handed in (`0x508214`): Conjure Food 587's
+    /// "providing the mage and `$ghis:her;` allies" takes "her" on 1, "his" on 0.
+    #[test]
+    fn a_trigger_texts_gender_branch_follows_the_player() {
+        let Some(spells) = real_spells() else { return };
+        let no_strings = |_: &str| None;
+        let line = |gender: u8| {
+            super::spell_desc_text(
+                Some(&spells),
+                587,
+                &|_| 0,
+                None,
+                &move || gender,
+                None,
+                &no_strings,
+            )
+            .expect("a described spell")
+        };
+        assert!(line(1).contains("the mage and her allies"), "{}", line(1));
+        assert!(line(0).contains("the mage and his allies"), "{}", line(0));
     }
 }
