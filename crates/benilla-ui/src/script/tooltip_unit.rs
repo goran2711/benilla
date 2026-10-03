@@ -1,7 +1,8 @@
-//! The engine unit tooltip, in `0x529fe0`'s line order: the name (gold; FrameXML recolours it by
-//! reaction), the creature subtitle, the level line, the faction name, then "PvP", "Skinnable",
-//! "Civilian" and "Leader", with health on the `<name>StatusBar` child. The world mouseover drives
-//! it through [`super::UiScript::world_tooltip_unit`]; unit-frame hovers call `SetUnit` from Lua.
+//! The engine unit tooltip, in `0x529fe0`'s line order: the name (gold; a ranked player's reads
+//! "Sergeant Name", decorated by `0x609370`; FrameXML recolours it by reaction), the creature
+//! subtitle, the level line, the faction name, then "PvP", "Skinnable", "Civilian" and "Leader",
+//! with health on the `<name>StatusBar` child. The world mouseover drives it through
+//! [`super::UiScript::world_tooltip_unit`]; unit-frame hovers call `SetUnit` from Lua.
 
 use mlua::{Lua, Table};
 
@@ -118,10 +119,26 @@ fn render_unit(lua: &Lua, this: &Table, token: &str) -> mlua::Result<bool> {
         return Ok(false);
     };
     // The name: `CGUnit_C::GetUnitName` `0x609210` (`0x52a187`), whose every miss falls to
-    // `UNKNOWNOBJECT`, as `UnitName`'s does. A token with no object never reaches the builder
-    // (`0x468460`): no plate, and `SetUnit` answers nil.
+    // `UNKNOWNOBJECT`, as `UnitName`'s does. The tooltip then calls `0x609370` itself (`0x52a1ab`,
+    // decoration flag hardcoded `1`, so the CVar mask cannot gate it), so a ranked player reads
+    // "Sergeant Name"; the builder's city-protector medal leg is not built, as on the overhead
+    // line. A token with no object never reaches the builder (`0x468460`): no plate, and `SetUnit`
+    // answers nil.
     let title = match &u.name {
-        Some(n) => n.clone(),
+        Some(name) => {
+            let ranked = u.is_player.then(|| {
+                super::pvp::decorated_name(
+                    |key| crate::strings::global(lua, key),
+                    super::pvp::RankTitle {
+                        rank: u.pvp_rank,
+                        team: u.pvp_team,
+                        female: u.sex == 3,
+                    },
+                    name,
+                )
+            });
+            ranked.flatten().unwrap_or_else(|| name.clone())
+        }
         None => unknownobject(lua)?.to_str()?.to_string(),
     };
     append_line(lua, this, (title, GOLD), None, false)?;
