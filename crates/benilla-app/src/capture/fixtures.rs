@@ -14,6 +14,10 @@ const WOLF_FACTION: u32 = 32;
 /// surface, so its overhead name projects onto the water beyond it.
 pub(super) const NAME_WATER_POS: [f32; 3] = [-9512.97, -331.29, 61.4];
 
+/// The `name-rank` fixture's subject: the `vplates` wolf's dry spot in Northshire, so the two
+/// overhead-name captures read apart by subject and not by place.
+pub(super) const NAME_RANK_POS: [f32; 3] = [-8949.95, -132.49, 83.9];
+
 /// The lighting matrix's chest: `GameObjectDisplayInfo` 259, `TreasureChest01.mdx`. GameObject
 /// guids carry the `0xF110` high word; the default descriptor holds the closed rest pose.
 const CHEST_DISPLAY: u32 = 259;
@@ -1290,6 +1294,49 @@ pub(super) fn seed_ui_fixture(
                 Transform {
                     translation: wow_to_bevy(NAME_WATER_POS),
                     rotation: Quat::from_rotation_y(2.2),
+                    ..default()
+                },
+                Visibility::default(),
+            ));
+            // A plated unit draws no floating name, so enemy plates go off.
+            set_enemy_plates(script.as_deref(), false);
+        }
+        UiFixture::NameRank => {
+            use benilla_protocol::messages::ObjectFields;
+            // The self player at the eye, as `name-water`; the subject is the other player's name.
+            const SELF_GUID: u64 = 0x51;
+            names.insert_player(SELF_GUID, "Benilla".into(), None);
+            commands.spawn((
+                crate::net::ObjectStore(ObjectFields::from_pairs(&[
+                    (34, 2),      // UNIT_FIELD_LEVEL
+                    (35, 1),      // UNIT_FIELD_FACTIONTEMPLATE: human
+                    (36, 0x0101), // UNIT_FIELD_BYTES_0: race human, class warrior
+                ])),
+                crate::net::SelfPlayer,
+                crate::net::Guid(SELF_GUID),
+                Transform::from_translation(wow_to_bevy(scenario.eye)),
+            ));
+            // The subject: a human player holding rank, `PLAYER_BYTES_3` byte 3
+            // (`PLAYER_BYTES_3_OFFSET_HONOR_RANK`, vmangos `HonorMgr.cpp:904`) at internal 7:
+            // the visual rank 3, "Sergeant" (team 1 off race 1's `ChrRaces` row).
+            const RANKED_GUID: u64 = 0x52;
+            names.insert_player(RANKED_GUID, "Bob".into(), None);
+            commands.spawn((
+                crate::net::Guid(RANKED_GUID),
+                crate::net::NetEntity {
+                    kind: benilla_protocol::EntityKind::Player,
+                    // HumanMale, the body a human `UNIT_FIELD_DISPLAYID` carries.
+                    display_id: Some(49),
+                    scale: 1.0,
+                },
+                crate::net::ObjectStore(ObjectFields::from_pairs(&[
+                    (34, 60),       // UNIT_FIELD_LEVEL
+                    (35, 1),        // UNIT_FIELD_FACTIONTEMPLATE: human
+                    (36, 0x0101),   // UNIT_FIELD_BYTES_0: race human, class warrior, male
+                    (195, 7 << 24), // PLAYER_BYTES_3 byte 3: the current honor rank, internal 7
+                ])),
+                Transform {
+                    translation: wow_to_bevy(NAME_RANK_POS),
                     ..default()
                 },
                 Visibility::default(),
