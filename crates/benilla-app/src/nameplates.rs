@@ -88,7 +88,8 @@ fn flag_prefix(player_flags: u32) -> String {
 
 /// The install strings the a4 rank prefix resolves (`UNIT_PVP_NAME` and the `PVP_RANK_*` titles),
 /// snapshotted off the VM once: the world-text pass runs without it, and `0x609370` reads the same
-/// keys live.
+/// keys live. Limit: the snapshot is the boot VM's `GlobalStrings.lua`, so an addon that redefines
+/// a key later moves the live readers (`UnitPVPName`, the unit tooltip) and not this copy.
 #[derive(Resource, Default)]
 pub(crate) struct PvpNameStrings {
     /// Set on the first VM frame whether or not the install had the keys: a retry would say the
@@ -119,9 +120,7 @@ impl PvpNameStrings {
     fn decorated(&self, key: TitleKey, name: &str) -> Option<String> {
         benilla_ui::script::decorated_name(
             |global| self.strings.get(global).cloned(),
-            key.rank,
-            key.team,
-            key.female,
+            key.title,
             name,
         )
     }
@@ -131,12 +130,9 @@ impl PvpNameStrings {
 /// so a rank change or a CVar flip rebuilds without reading the install strings again.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct TitleKey {
-    /// `PLAYER_BYTES_3` byte 3 (`UnitPVPRank`), the internal rank 0..=18.
-    rank: u8,
-    /// The `PVP_RANK_<rank>_<team>` team digit from the race: 0 Horde, 1 Alliance, -1 no side.
-    team: i8,
-    /// Female takes the `_FEMALE` title twin (`0x612bf0`).
-    female: bool,
+    /// The rank, team and gender the title lookup keyed on
+    /// ([`benilla_ui::script::RankTitle`]).
+    title: benilla_ui::script::RankTitle,
     /// The a4 bit (`0x20`) was set and the install strings were loaded when the line was built.
     on: bool,
 }
@@ -151,12 +147,14 @@ fn title_key(
 ) -> Option<TitleKey> {
     let store = store?;
     (net.kind == EntityKind::Player).then(|| TitleKey {
-        rank: store.0.player_pvp_rank().unwrap_or(0),
-        team: store
-            .0
-            .unit_race()
-            .map_or(-1, crate::ui_unit::race_pvp_team),
-        female: store.0.unit_gender() == Some(1),
+        title: benilla_ui::script::RankTitle {
+            rank: store.0.player_pvp_rank().unwrap_or(0),
+            team: store
+                .0
+                .unit_race()
+                .map_or(-1, crate::ui_unit::race_pvp_team),
+            female: store.0.unit_gender() == Some(1),
+        },
         on: cfg.player_pvp_title && strings_ready,
     })
 }
@@ -705,7 +703,7 @@ pub(crate) fn on_cvar(ev: On<crate::cvars::CvarChanged>, mut names: ResMut<NameC
 /// loads before the first frame: a VM-less test never seals, and no frame after the first pays
 /// more than the sealed check.
 fn load_pvp_title_strings(
-    script: Option<NonSendMut<benilla_ui::script::UiScript>>,
+    script: Option<NonSend<benilla_ui::script::UiScript>>,
     mut strings: ResMut<PvpNameStrings>,
 ) {
     if strings.sealed {
@@ -876,13 +874,13 @@ mod tests {
         let human = ObjectStore(ObjectFields::from_pairs(&[(36, 0x0101), (195, 7 << 24)]));
         let key = title_key(&cfg, true, &net(EntityKind::Player), Some(&human)).unwrap();
         assert_eq!(
-            (key.rank, key.team, key.female, key.on),
+            (key.title.rank, key.title.team, key.title.female, key.on),
             (7, 1, false, true)
         );
         // Orc (race 2 → team 0), female; the CVar off, and the strings unloaded, each drop the bit.
         let orc = ObjectStore(ObjectFields::from_pairs(&[(36, 0x010102), (195, 7 << 24)]));
         let orc = title_key(&cfg, true, &net(EntityKind::Player), Some(&orc)).unwrap();
-        assert_eq!((orc.team, orc.female), (0, true));
+        assert_eq!((orc.title.team, orc.title.female), (0, true));
         let off = NameConfig {
             player_pvp_title: false,
             ..NameConfig::default()
@@ -915,9 +913,11 @@ mod tests {
             .strings
             .insert("PVP_RANK_7_1".into(), "Sergeant".into());
         let key = TitleKey {
-            rank: 7,
-            team: 1,
-            female: false,
+            title: benilla_ui::script::RankTitle {
+                rank: 7,
+                team: 1,
+                female: false,
+            },
             on: true,
         };
         assert_eq!(
@@ -926,12 +926,30 @@ mod tests {
             "the rank rides in front of the name"
         );
         assert_eq!(
-            strings.decorated(TitleKey { rank: 0, ..key }, "Bob"),
+            strings.decorated(
+                TitleKey {
+                    title: benilla_ui::script::RankTitle {
+                        rank: 0,
+                        ..key.title
+                    },
+                    ..key
+                },
+                "Bob"
+            ),
             None,
             "unranked: no a4 line"
         );
         assert_eq!(
-            strings.decorated(TitleKey { team: 0, ..key }, "Bob"),
+            strings.decorated(
+                TitleKey {
+                    title: benilla_ui::script::RankTitle {
+                        team: 0,
+                        ..key.title
+                    },
+                    ..key
+                },
+                "Bob"
+            ),
             None,
             "the Horde key is not the Alliance one"
         );
@@ -957,9 +975,11 @@ mod tests {
         assert!(strings.sealed);
         assert!(strings.ready(), "the template is present");
         let female = TitleKey {
-            rank: 7,
-            team: 1,
-            female: true,
+            title: benilla_ui::script::RankTitle {
+                rank: 7,
+                team: 1,
+                female: true,
+            },
             on: true,
         };
         assert_eq!(

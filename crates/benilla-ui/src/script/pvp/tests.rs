@@ -368,23 +368,70 @@ fn the_lookup_generic_builder_resolves_the_same_keys() {
     .into();
     let lookup = |key: &str| strings.get(key).map(|value| (*value).to_string());
     assert_eq!(
-        decorated_name(lookup, 9, 1, false, "Bob").as_deref(),
+        decorated_name(
+            lookup,
+            RankTitle {
+                rank: 9,
+                team: 1,
+                female: false,
+            },
+            "Bob",
+        )
+        .as_deref(),
         Some("Sergeant Major Bob"),
         "rank first, name second"
     );
     assert_eq!(
-        decorated_name(lookup, 9, 1, true, "Bob").as_deref(),
+        decorated_name(
+            lookup,
+            RankTitle {
+                rank: 9,
+                team: 1,
+                female: true,
+            },
+            "Bob",
+        )
+        .as_deref(),
         Some("Sergeant Major (f) Bob"),
         "the female twin wins"
     );
     assert_eq!(
-        decorated_name(lookup, 9, 0, false, "Bob").as_deref(),
+        decorated_name(
+            lookup,
+            RankTitle {
+                rank: 9,
+                team: 0,
+                female: false,
+            },
+            "Bob",
+        )
+        .as_deref(),
         Some("Senior Sergeant Bob"),
         "team 0 keys the Horde list"
     );
-    assert_eq!(decorated_name(lookup, 0, 1, false, "Bob"), None, "unranked");
     assert_eq!(
-        decorated_name(lookup, 6, 1, false, "Bob"),
+        decorated_name(
+            lookup,
+            RankTitle {
+                rank: 0,
+                team: 1,
+                female: false,
+            },
+            "Bob",
+        ),
+        None,
+        "unranked"
+    );
+    assert_eq!(
+        decorated_name(
+            lookup,
+            RankTitle {
+                rank: 6,
+                team: 1,
+                female: false,
+            },
+            "Bob",
+        ),
         None,
         "a key the install lacks declines"
     );

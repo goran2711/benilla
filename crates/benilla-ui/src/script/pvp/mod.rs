@@ -129,7 +129,14 @@ impl super::UiScript {
     /// victim's (`0x625374`), and a victim whose team is -1 gets no line at all (`0x625321`),
     /// hence `team: u8`.
     pub fn pvp_rank_title(&self, rank: u8, team: u8, female: bool) -> Option<String> {
-        rank_title_gendered(self.lua(), i64::from(rank), i64::from(team), female)
+        rank_title_gendered(
+            self.lua(),
+            RankTitle {
+                rank,
+                team: team as i8,
+                female,
+            },
+        )
     }
 }
 
@@ -218,25 +225,34 @@ fn rank_title_ungendered(lua: &Lua, rank: i64, team: i64) -> Option<String> {
     global_string(lua, &format!("PVP_RANK_{rank}_{team}"))
 }
 
+/// The `PVP_RANK_<rank>_<team>[_FEMALE]` inputs, kept together because the live lookup and the
+/// world-text pass's builder key on the same three.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct RankTitle {
+    /// `PLAYER_BYTES_3` byte 3 (`UnitPVPRank`), the internal rank 0..=18; 19 is the racial
+    /// "Leader" the keys still name.
+    pub rank: u8,
+    /// The team digit from the race: 0 Horde, 1 Alliance, -1 no side.
+    pub team: i8,
+    /// Female takes the `_FEMALE` twin (`0x612bf0`) and falls back to the base key.
+    pub female: bool,
+}
+
 /// The same title gendered, `0x612bf0`: it passes 2 (male) or 3 (female) to `0x703bf0`, which
 /// asks FrameXML's `GetText` to append `_FEMALE` for 3 (the engine never builds that key), and
 /// retries ungendered on a miss (`0x612c2d`). Used by `UnitPVPName` and the credit line.
-fn rank_title_gendered(lua: &Lua, rank: i64, team: i64, female: bool) -> Option<String> {
-    rank_title(&|key| global_string(lua, key), rank, team, female)
+fn rank_title_gendered(lua: &Lua, title: RankTitle) -> Option<String> {
+    rank_title(&|key| global_string(lua, key), title)
 }
 
 /// [`rank_title_gendered`]'s key construction over a string lookup, so a caller with no VM (the
 /// world-text pass) resolves the same `_FEMALE` twin and fallback.
-fn rank_title(
-    lookup: &impl Fn(&str) -> Option<String>,
-    rank: i64,
-    team: i64,
-    female: bool,
-) -> Option<String> {
-    female
-        .then(|| lookup(&format!("PVP_RANK_{rank}_{team}_FEMALE")))
+fn rank_title(lookup: &impl Fn(&str) -> Option<String>, title: RankTitle) -> Option<String> {
+    title
+        .female
+        .then(|| lookup(&format!("PVP_RANK_{}_{}_FEMALE", title.rank, title.team)))
         .flatten()
-        .or_else(|| lookup(&format!("PVP_RANK_{rank}_{team}")))
+        .or_else(|| lookup(&format!("PVP_RANK_{}_{}", title.rank, title.team)))
 }
 
 /// Fill a two-`%s` C format string, the install's template (enUS `UNIT_PVP_NAME` is `"%s %s"`);
@@ -266,8 +282,10 @@ fn format_two_strings(fmt: &str, a: &str, b: &str) -> String {
 }
 
 /// The install keys a name-line rank prefix can resolve: `UNIT_PVP_NAME` and every
-/// `PVP_RANK_<rank>_<team>[_FEMALE]` for ranks 1..=19 and both team digits. The world-text pass
-/// snapshots them off the VM, which it cannot reach; `UnitPVPName` looks them up live.
+/// `PVP_RANK_<rank>_<team>[_FEMALE]` for ranks 1..=19 and both team digits. The range reaches 19
+/// because the builder is range-unchecked and the install's `PVP_RANK_19_*` names the racial
+/// "Leader", past the player rank byte's 0..=18. The world-text pass snapshots them off the VM,
+/// which it cannot reach; `UnitPVPName` looks them up live.
 pub fn pvp_name_global_keys() -> Vec<String> {
     let mut keys = Vec::with_capacity(1 + 19 * 2 * 2);
     keys.push("UNIT_PVP_NAME".to_string());
@@ -285,15 +303,13 @@ pub fn pvp_name_global_keys() -> Vec<String> {
 /// missing template — the two misses the builder declines on.
 pub fn decorated_name(
     lookup: impl Fn(&str) -> Option<String>,
-    rank: u8,
-    team: i8,
-    female: bool,
+    key: RankTitle,
     name: &str,
 ) -> Option<String> {
-    if rank == 0 {
+    if key.rank == 0 {
         return None;
     }
-    let title = rank_title(&lookup, i64::from(rank), i64::from(team), female)?;
+    let title = rank_title(&lookup, key)?;
     let template = lookup("UNIT_PVP_NAME")?;
     Some(format_two_strings(&template, &title, name))
 }
@@ -305,9 +321,11 @@ fn pvp_name(lua: &Lua, u: &super::UnitState, name: &str, player_level: u32) -> S
     if u.is_player && u.pvp_rank != 0 {
         let decorated = decorated_name(
             |key| global_string(lua, key),
-            u.pvp_rank,
-            u.pvp_team,
-            u.sex == 3,
+            RankTitle {
+                rank: u.pvp_rank,
+                team: u.pvp_team,
+                female: u.sex == 3,
+            },
             name,
         );
         if let Some(mut out) = decorated {
