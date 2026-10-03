@@ -12,12 +12,16 @@
 //! - Show gate (`ShouldShowName`, `0x6070a0`): the own unit by `UnitNameOwn`, before the target
 //!   rescue; the current target (`[0xb4e2d8]`, the selection) regardless of CVars; a dead creature
 //!   only through that rescue; others by `UnitNamePlayer` or `UnitNameNPC`.
-//! - Lines (`0x608f50`): an NPC's name and `<Subname>`; a player's `<AFK>`/`<DND>`/`<GM>` prefixes,
-//!   name and `<Guild>`. The guild (a5) and subname (a6) slots share the format `"\n<%s>"`
-//!   (`0x860f9c`) and are never both reached; a5 alone is CVar-gated (`0x609085`).
+//! - Lines (`0x608f50`): an NPC's name and `<Subname>`; a player's `<AFK>`/`<DND>`/`<GM>`
+//!   prefixes, the a4 rank prefix (`UnitNamePlayerPVPTitle`, bit `0x20`) and name, and `<Guild>`.
+//!   The guild (a5) and subname (a6) slots share the format `"\n<%s>"` (`0x860f9c`) and are never
+//!   both reached; a5 alone is CVar-gated (`0x609085`).
+//! - The a4 rank prefix is `0x609370`'s ranked-player leg: `UNIT_PVP_NAME` filled rank first,
+//!   `PVP_RANK_<rank>_<team>` off the unit's public `PLAYER_BYTES_3` byte 3 and its race's team
+//!   digit, and never a creature's.
 //!
-//! Not built: the a4 PvP rank prefix (`UnitNamePlayerPVPTitle`, bit `0x20`), whose faction side
-//! `ui_unit` does not resolve for another player; a7 and a8 have no cross-realm wire here.
+//! Not built: the city-protector line the same builder appends for a set `PLAYER_BYTES_3` byte 2
+//! (`PVP_MEDAL<n>`, which vmangos's `.title` sets); a7 and a8 have no cross-realm wire here.
 
 use std::collections::HashMap;
 
@@ -49,6 +53,9 @@ pub(crate) struct NameConfig {
     /// `UnitNamePlayerGuild`, mask bit `0x10`, registered `"1"`: gates the a5 guild line
     /// (`0x609085`), not a whole name.
     pub(crate) player_guild: bool,
+    /// `UnitNamePlayerPVPTitle` (`0x86c668`, registered `"1"`), mask bit `0x20`: gates the a4 rank
+    /// prefix on the main name line (`0x609370`).
+    pub(crate) player_pvp_title: bool,
 }
 
 impl Default for NameConfig {
@@ -58,6 +65,7 @@ impl Default for NameConfig {
             npc: false,
             own: false,
             player_guild: true,
+            player_pvp_title: true,
         }
     }
 }
@@ -78,37 +86,92 @@ fn flag_prefix(player_flags: u32) -> String {
         .collect()
 }
 
-/// Whether `cached` equals the stack [`drive_nameplates`] would build from these inputs, compared
-/// in place so the steady frame allocates nothing; a differential test pins the equivalence.
-fn lines_current(
-    cached: &[String],
-    player_flags: u32,
-    name: &str,
-    bracketed: Option<&str>,
-) -> bool {
-    let name_line = |line: &str| {
-        let mut rest = line;
-        for (bit, tag) in FLAG_PREFIXES {
-            if player_flags & bit != 0 {
-                match rest.strip_prefix(tag) {
-                    Some(r) => rest = r,
-                    None => return false,
-                }
+/// The install strings the a4 rank prefix resolves (`UNIT_PVP_NAME` and the `PVP_RANK_*` titles),
+/// snapshotted off the VM once: the world-text pass runs without it, and `0x609370` reads the same
+/// keys live.
+#[derive(Resource, Default)]
+pub(crate) struct PvpNameStrings {
+    /// Set on the first VM frame whether or not the install had the keys: a retry would say the
+    /// same thing every frame.
+    sealed: bool,
+    strings: HashMap<String, String>,
+}
+
+impl PvpNameStrings {
+    /// Read [`benilla_ui::script::pvp_name_global_keys`] off the VM and seal. Every present key is
+    /// kept; a missing one is the builder's own miss.
+    fn load(&mut self, script: &benilla_ui::script::UiScript) {
+        for key in benilla_ui::script::pvp_name_global_keys() {
+            if let Some(value) = benilla_ui::strings::global(script.lua(), &key) {
+                self.strings.insert(key, value);
             }
         }
-        rest == name
-    };
-    match (cached, bracketed) {
-        ([l0], None) => name_line(l0),
-        ([l0, l1], Some(bracketed)) => {
-            name_line(l0)
-                && l1
-                    .strip_prefix('<')
-                    .and_then(|r| r.strip_suffix('>'))
-                    .is_some_and(|r| r == bracketed)
-        }
-        _ => false,
+        self.sealed = true;
     }
+
+    /// Whether the snapshot holds the template: no install strings, no prefix, as `UnitPVPName`
+    /// answers the plain name with `_G` missing.
+    fn ready(&self) -> bool {
+        self.strings.contains_key("UNIT_PVP_NAME")
+    }
+
+    /// `0x609370`'s ranked-player leg for `key`; `None` where the builder declines.
+    fn decorated(&self, key: TitleKey, name: &str) -> Option<String> {
+        benilla_ui::script::decorated_name(
+            |global| self.strings.get(global).cloned(),
+            key.rank,
+            key.team,
+            key.female,
+            name,
+        )
+    }
+}
+
+/// The a4 rank-prefix inputs a live line was built with: the steady frame compares these fields,
+/// so a rank change or a CVar flip rebuilds without reading the install strings again.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct TitleKey {
+    /// `PLAYER_BYTES_3` byte 3 (`UnitPVPRank`), the internal rank 0..=18.
+    rank: u8,
+    /// The `PVP_RANK_<rank>_<team>` team digit from the race: 0 Horde, 1 Alliance, -1 no side.
+    team: i8,
+    /// Female takes the `_FEMALE` title twin (`0x612bf0`).
+    female: bool,
+    /// The a4 bit (`0x20`) was set and the install strings were loaded when the line was built.
+    on: bool,
+}
+
+/// The a4 inputs for one unit, cheap enough for the steady frame: `None` off a player or before
+/// its descriptor arrives.
+fn title_key(
+    cfg: &NameConfig,
+    strings_ready: bool,
+    net: &NetEntity,
+    store: Option<&ObjectStore>,
+) -> Option<TitleKey> {
+    let store = store?;
+    (net.kind == EntityKind::Player).then(|| TitleKey {
+        rank: store.0.player_pvp_rank().unwrap_or(0),
+        team: store
+            .0
+            .unit_race()
+            .map_or(-1, crate::ui_unit::race_pvp_team),
+        female: store.0.unit_gender() == Some(1),
+        on: cfg.player_pvp_title && strings_ready,
+    })
+}
+
+/// A live plate: its entity and stack, and the inputs the stack was built from, so a steady frame
+/// compares fields and re-reads neither the name cache nor the install strings.
+struct LiveName {
+    plate: Entity,
+    lines: Vec<String>,
+    paint: NamePaint,
+    /// `0x608f50`'s line inputs at build time.
+    flags: u32,
+    name: String,
+    bracketed: Option<String>,
+    key: Option<TitleKey>,
 }
 
 /// The name's world scale for a unit whose overhead anchor sits `d` world units above its feet.
@@ -149,8 +212,8 @@ impl NamePaint {
 pub(crate) struct Nameplates {
     materials: HashMap<NamePaint, Handle<StandardMaterial>>,
     meshes: HashMap<Vec<String>, Handle<Mesh>>,
-    /// unit → (plate entity, the (lines, color) it was built with).
-    live: bevy::ecs::entity::EntityHashMap<(Entity, Vec<String>, NamePaint)>,
+    /// unit → its live plate and the inputs the stack was built from.
+    live: bevy::ecs::entity::EntityHashMap<LiveName>,
     /// The atlas generation the meshes' UVs were built from; `None` before the first build.
     baked_from: Option<u64>,
 }
@@ -165,7 +228,7 @@ impl Nameplates {
     /// The line count of `unit`'s live name, for the raid marker's seat (`0x6c70d8`: one pitch
     /// above the block, or at the bare anchor when no name shows).
     pub(crate) fn line_count(&self, unit: Entity) -> Option<usize> {
-        self.live.get(&unit).map(|(_, lines, _)| lines.len())
+        self.live.get(&unit).map(|live| live.lines.len())
     }
 }
 
@@ -289,6 +352,8 @@ pub(crate) fn drive_nameplates(
         Res<crate::ui_party::GroupState>,
         // The UnitName* CVar mask.
         Res<NameConfig>,
+        // The install's rank strings, snapshotted off the VM ([`PvpNameStrings`]).
+        Res<PvpNameStrings>,
     ),
     names: Res<NameCache>,
     // The guild cache, the a5 line's text; `ResMut` because a miss sends `CMSG_GUILD_QUERY`.
@@ -310,7 +375,7 @@ pub(crate) fn drive_nameplates(
         Query<(), With<crate::entities::mount::MountChild>>,
     ),
 ) {
-    let (selection, flash, rig, vplates, bubbles, group, name_cfg) = gates;
+    let (selection, flash, rig, vplates, bubbles, group, name_cfg, pvp_strings) = gates;
     let (Ok(cam_tf), Some(atlas)) = (camera.single(), atlas.as_mut()) else {
         return;
     };
@@ -448,22 +513,32 @@ pub(crate) fn drive_nameplates(
         };
 
         seen.insert(entity);
+        let key = title_key(&name_cfg, pvp_strings.ready(), net, store);
         match plates.live.get(&entity) {
-            // The steady frame compares the cached stack in place, allocating nothing.
-            Some((_, l, c)) if *c == color && lines_current(l, flags, name, bracketed) => {}
+            // The steady frame compares the inputs in place, allocating nothing; a rebuild from
+            // these inputs is the stack `LiveName` holds.
+            Some(live)
+                if live.paint == color
+                    && live.flags == flags
+                    && live.key == key
+                    && live.name == name
+                    && live.bracketed.as_deref() == bracketed => {}
             stale => {
-                if let Some((old, _, _)) = stale {
-                    let old = *old;
-                    if let Ok(mut e) = commands.get_entity(old) {
+                if let Some(live) = stale {
+                    if let Ok(mut e) = commands.get_entity(live.plate) {
                         e.despawn();
                     }
                 }
-                // Keep in sync with `lines_current`; its differential test pins this shape.
+                // `0x609370`'s a4 leg over the snapshot; a declining builder keeps the plain name.
+                let body = key
+                    .filter(|key| key.on)
+                    .and_then(|key| pvp_strings.decorated(key, name))
+                    .unwrap_or_else(|| name.to_owned());
                 let prefix = flag_prefix(flags);
                 let mut lines = vec![if prefix.is_empty() {
-                    name.to_owned()
+                    body
                 } else {
-                    format!("{prefix}{name}")
+                    format!("{prefix}{body}")
                 }];
                 if let Some(bracketed) = bracketed {
                     lines.push(format!("<{bracketed}>"));
@@ -495,16 +570,27 @@ pub(crate) fn drive_nameplates(
                 let plate = commands
                     .spawn((Mesh3d(mesh), MeshMaterial3d(material), place, NamePlate))
                     .id();
-                plates.live.insert(entity, (plate, lines, color));
+                plates.live.insert(
+                    entity,
+                    LiveName {
+                        plate,
+                        lines,
+                        paint: color,
+                        flags,
+                        name: name.to_owned(),
+                        bracketed: bracketed.map(str::to_owned),
+                        key,
+                    },
+                );
             }
         }
     }
     // Plates whose unit despawned or gated off this frame.
-    plates.live.retain(|unit, (plate, _, _)| {
+    plates.live.retain(|unit, live| {
         if seen.contains(unit) {
             true
         } else {
-            if let Ok(mut e) = commands.get_entity(*plate) {
+            if let Ok(mut e) = commands.get_entity(live.plate) {
                 e.despawn();
             }
             false
@@ -540,8 +626,8 @@ fn place_nameplates(
     };
     let facing = cam_tf.rotation;
     let blend = 1.0 - (-ROCK_MEAN_RATE * trace.1.delta_secs()).exp();
-    for (&unit, (plate, ..)) in plates.live.iter() {
-        let (Ok(tf), Ok((mut ptf, mut pglobal))) = (units.get(unit), plate_tfs.get_mut(*plate))
+    for (&unit, live) in plates.live.iter() {
+        let (Ok(tf), Ok((mut ptf, mut pglobal))) = (units.get(unit), plate_tfs.get_mut(live.plate))
         else {
             continue; // spawned this frame and not yet flushed, or the unit is despawning
         };
@@ -603,15 +689,32 @@ pub(crate) struct NameplatesPlugin;
 #[derive(Resource)]
 struct NameAnchorTrace(bool);
 
-/// The overhead-name rows' change callback: the name trio and the guild line.
+/// The overhead-name rows' change callback: the name trio, the guild line and the rank prefix.
 pub(crate) fn on_cvar(ev: On<crate::cvars::CvarChanged>, mut names: ResMut<NameConfig>) {
     match ev.key().as_str() {
         "unitnameplayer" => names.player = ev.flag(),
         "unitnamenpc" => names.npc = ev.flag(),
         "unitnameown" => names.own = ev.flag(),
         "unitnameplayerguild" => names.player_guild = ev.flag(),
+        "unitnameplayerpvptitle" => names.player_pvp_title = ev.flag(),
         _ => {}
     }
+}
+
+/// Snapshot [`PvpNameStrings`] off the VM once it holds `GlobalStrings.lua`, which the boot VM
+/// loads before the first frame: a VM-less test never seals, and no frame after the first pays
+/// more than the sealed check.
+fn load_pvp_title_strings(
+    script: Option<NonSendMut<benilla_ui::script::UiScript>>,
+    mut strings: ResMut<PvpNameStrings>,
+) {
+    if strings.sealed {
+        return;
+    }
+    let Some(script) = script else {
+        return;
+    };
+    strings.load(&script);
 }
 
 impl Plugin for NameplatesPlugin {
@@ -622,10 +725,18 @@ impl Plugin for NameplatesPlugin {
         ))
         .init_resource::<Nameplates>()
         .init_resource::<NameConfig>()
+        .init_resource::<PvpNameStrings>()
+        // Nothing the tick produced, so it drains on the tick's far side; the snapshot lands by
+        // the frame after the VM exists and the plate rebuilds when `ready` flips.
+        .add_systems(
+            Update,
+            load_pvp_title_strings.after(crate::ui_script::UiInput),
+        )
         // After targeting, V-key plates and chat bubbles: the gate reads their verdicts.
         .add_systems(
             Update,
             drive_nameplates
+                .after(load_pvp_title_strings)
                 .after(crate::target::TargetUpdate)
                 .after(crate::vplates::VPlateSet)
                 .after(crate::chat_bubble::BubbleSet),
@@ -653,8 +764,8 @@ fn drop_stale_glyph_caches(plates: &mut Nameplates, generation: u64, commands: &
             plates.meshes.len(),
             plates.live.len(),
         );
-        for (plate, _, _) in plates.live.values() {
-            if let Ok(mut e) = commands.get_entity(*plate) {
+        for live in plates.live.values() {
+            if let Ok(mut e) = commands.get_entity(live.plate) {
                 e.despawn();
             }
         }
@@ -750,40 +861,117 @@ mod tests {
 
     const RED: Color = Color::linear_rgb(1.0, 0.0, 0.0);
 
-    /// Pinned against the build over every pair of cases, both ways: an unflagged `<AFK>Bob`
-    /// equals a flagged `Bob`, as the built strings do.
+    /// The a4 inputs off the descriptor: the public rank byte, the race's team digit, the sex and
+    /// the CVar's snapshot-ready bit; a creature has no a4 leg.
     #[test]
-    fn lines_current_matches_the_built_stack() {
-        let build = |flags: u32, name: &str, bracketed: Option<&str>| {
-            let mut lines = vec![format!("{}{name}", flag_prefix(flags))];
-            if let Some(bracketed) = bracketed {
-                lines.push(format!("<{bracketed}>"));
-            }
-            lines
+    fn title_key_reads_the_rank_byte_the_race_and_the_cvar() {
+        use benilla_protocol::messages::ObjectFields;
+        let net = |kind| NetEntity {
+            kind,
+            display_id: None,
+            scale: 1.0,
         };
-        let cases: &[(u32, &str, Option<&str>)] = &[
-            (0, "Mankrik", None),
-            (0, "Young Wolf", Some("Beast")),
-            (0, "Young Wolf", None),
-            (0x2, "Bob", None),
-            (0x2 | 0x8, "Bob", None),
-            (0, "<AFK>Bob", None),
-            // The a5 guild slot: a bracketed name, and one colliding with a subname above.
-            (0, "Bob", Some("Legacy")),
-            (0x2, "Bob", Some("Legacy")),
-            (0, "Bob", Some("<Legacy>")),
-            (0, "Young Wolf", Some("Beast Handlers")),
-        ];
-        for &(flags, name, bracketed) in cases {
-            let cached = build(flags, name, bracketed);
-            for &(f2, n2, b2) in cases {
-                assert_eq!(
-                    lines_current(&cached, f2, n2, b2),
-                    build(f2, n2, b2) == cached,
-                    "cache of ({flags:#x}, {name:?}, {bracketed:?}) vs ({f2:#x}, {n2:?}, {b2:?})"
-                );
-            }
-        }
+        let cfg = NameConfig::default();
+        // Human (race 1 → team 1), `PLAYER_BYTES_3` byte 3 rank 7.
+        let human = ObjectStore(ObjectFields::from_pairs(&[(36, 0x0101), (195, 7 << 24)]));
+        let key = title_key(&cfg, true, &net(EntityKind::Player), Some(&human)).unwrap();
+        assert_eq!(
+            (key.rank, key.team, key.female, key.on),
+            (7, 1, false, true)
+        );
+        // Orc (race 2 → team 0), female; the CVar off, and the strings unloaded, each drop the bit.
+        let orc = ObjectStore(ObjectFields::from_pairs(&[(36, 0x010102), (195, 7 << 24)]));
+        let orc = title_key(&cfg, true, &net(EntityKind::Player), Some(&orc)).unwrap();
+        assert_eq!((orc.team, orc.female), (0, true));
+        let off = NameConfig {
+            player_pvp_title: false,
+            ..NameConfig::default()
+        };
+        assert!(
+            !title_key(&off, true, &net(EntityKind::Player), Some(&human))
+                .unwrap()
+                .on
+        );
+        assert!(
+            !title_key(&cfg, false, &net(EntityKind::Player), Some(&human))
+                .unwrap()
+                .on
+        );
+        assert!(
+            title_key(&cfg, true, &net(EntityKind::Unit), Some(&human)).is_none(),
+            "a creature has no a4"
+        );
+    }
+
+    /// The snapshot's decoration is `0x609370`'s: title first, `None` off rank 0 or a key the
+    /// install lacks.
+    #[test]
+    fn the_snapshot_decorates_a_ranked_name() {
+        let mut strings = PvpNameStrings::default();
+        strings
+            .strings
+            .insert("UNIT_PVP_NAME".into(), "%s %s".into());
+        strings
+            .strings
+            .insert("PVP_RANK_7_1".into(), "Sergeant".into());
+        let key = TitleKey {
+            rank: 7,
+            team: 1,
+            female: false,
+            on: true,
+        };
+        assert_eq!(
+            strings.decorated(key, "Bob").as_deref(),
+            Some("Sergeant Bob"),
+            "the rank rides in front of the name"
+        );
+        assert_eq!(
+            strings.decorated(TitleKey { rank: 0, ..key }, "Bob"),
+            None,
+            "unranked: no a4 line"
+        );
+        assert_eq!(
+            strings.decorated(TitleKey { team: 0, ..key }, "Bob"),
+            None,
+            "the Horde key is not the Alliance one"
+        );
+    }
+
+    /// The loader takes the install's keys off the VM and seals, so the world-text pass never
+    /// needs the VM again.
+    #[test]
+    fn the_snapshot_load_takes_the_install_strings() {
+        let script = benilla_ui::script::UiScript::new().expect("a VM");
+        script
+            .run(
+                r#"UNIT_PVP_NAME = "%s %s"
+                   PVP_RANK_7_1 = "Sergeant"
+                   PVP_RANK_7_0 = "Sergeant"
+                   PVP_RANK_7_1_FEMALE = "Sergeant (f)"
+                   GARBAGE_KEY = "x"
+                "#,
+            )
+            .expect("globals set");
+        let mut strings = PvpNameStrings::default();
+        strings.load(&script);
+        assert!(strings.sealed);
+        assert!(strings.ready(), "the template is present");
+        let female = TitleKey {
+            rank: 7,
+            team: 1,
+            female: true,
+            on: true,
+        };
+        assert_eq!(
+            strings.decorated(female, "Bob").as_deref(),
+            Some("Sergeant (f) Bob"),
+            "the _FEMALE twin wins when it ships"
+        );
+        assert_eq!(
+            strings.strings.get("GARBAGE_KEY"),
+            None,
+            "only the a4 keys are read"
+        );
     }
 
     /// A parked plate's second placement leaves both change ticks alone; a moved unit still writes.
@@ -800,9 +988,18 @@ mod tests {
             .spawn((Transform::default(), GlobalTransform::default(), NamePlate))
             .id();
         let mut plates = Nameplates::default();
-        plates
-            .live
-            .insert(unit, (plate, vec!["Bob".to_string()], NamePaint::Flash));
+        plates.live.insert(
+            unit,
+            LiveName {
+                plate,
+                lines: vec!["Bob".to_string()],
+                paint: NamePaint::Flash,
+                flags: 0,
+                name: "Bob".into(),
+                bracketed: None,
+                key: None,
+            },
+        );
         world.insert_resource(plates);
 
         // First seat: the anchor fallback (no model) is the unit's own translation.
@@ -847,7 +1044,18 @@ mod tests {
         };
         plates.meshes.insert(lines.clone(), Handle::default());
         plates.materials.insert(NamePaint::Flash, Handle::default());
-        plates.live.insert(unit, (plate, lines, NamePaint::Flash));
+        plates.live.insert(
+            unit,
+            LiveName {
+                plate,
+                lines,
+                paint: NamePaint::Flash,
+                flags: 0,
+                name: "Young Wolf".into(),
+                bracketed: None,
+                key: None,
+            },
+        );
         plates
     }
 

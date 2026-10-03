@@ -222,10 +222,21 @@ fn rank_title_ungendered(lua: &Lua, rank: i64, team: i64) -> Option<String> {
 /// asks FrameXML's `GetText` to append `_FEMALE` for 3 (the engine never builds that key), and
 /// retries ungendered on a miss (`0x612c2d`). Used by `UnitPVPName` and the credit line.
 fn rank_title_gendered(lua: &Lua, rank: i64, team: i64, female: bool) -> Option<String> {
+    rank_title(&|key| global_string(lua, key), rank, team, female)
+}
+
+/// [`rank_title_gendered`]'s key construction over a string lookup, so a caller with no VM (the
+/// world-text pass) resolves the same `_FEMALE` twin and fallback.
+fn rank_title(
+    lookup: &impl Fn(&str) -> Option<String>,
+    rank: i64,
+    team: i64,
+    female: bool,
+) -> Option<String> {
     female
-        .then(|| global_string(lua, &format!("PVP_RANK_{rank}_{team}_FEMALE")))
+        .then(|| lookup(&format!("PVP_RANK_{rank}_{team}_FEMALE")))
         .flatten()
-        .or_else(|| rank_title_ungendered(lua, rank, team))
+        .or_else(|| lookup(&format!("PVP_RANK_{rank}_{team}")))
 }
 
 /// Fill a two-`%s` C format string, the install's template (enUS `UNIT_PVP_NAME` is `"%s %s"`);
@@ -254,14 +265,52 @@ fn format_two_strings(fmt: &str, a: &str, b: &str) -> String {
     out
 }
 
+/// The install keys a name-line rank prefix can resolve: `UNIT_PVP_NAME` and every
+/// `PVP_RANK_<rank>_<team>[_FEMALE]` for ranks 1..=19 and both team digits. The world-text pass
+/// snapshots them off the VM, which it cannot reach; `UnitPVPName` looks them up live.
+pub fn pvp_name_global_keys() -> Vec<String> {
+    let mut keys = Vec::with_capacity(1 + 19 * 2 * 2);
+    keys.push("UNIT_PVP_NAME".to_string());
+    for rank in 1..=19 {
+        for team in 0..=1 {
+            keys.push(format!("PVP_RANK_{rank}_{team}"));
+            keys.push(format!("PVP_RANK_{rank}_{team}_FEMALE"));
+        }
+    }
+    keys
+}
+
+/// `0x609370`'s ranked-player leg over a string lookup: `UNIT_PVP_NAME` filled rank first, the
+/// same builder [`pvp_name`] runs for `UnitPVPName`. `None` for rank 0, a missing title or a
+/// missing template — the two misses the builder declines on.
+pub fn decorated_name(
+    lookup: impl Fn(&str) -> Option<String>,
+    rank: u8,
+    team: i8,
+    female: bool,
+    name: &str,
+) -> Option<String> {
+    if rank == 0 {
+        return None;
+    }
+    let title = rank_title(&lookup, i64::from(rank), i64::from(team), female)?;
+    let template = lookup("UNIT_PVP_NAME")?;
+    Some(format_two_strings(&template, &title, name))
+}
+
 /// `0x609370`, the name builder behind `UnitPVPName` (its legs are at the binding); `name` is the
 /// plain `UnitName`.
 fn pvp_name(lua: &Lua, u: &super::UnitState, name: &str, player_level: u32) -> String {
     // Leg A: a ranked player; the title is gendered by this unit and range-unchecked.
     if u.is_player && u.pvp_rank != 0 {
-        let title = rank_title_gendered(lua, i64::from(u.pvp_rank), team_of(u), u.sex == 3);
-        if let (Some(fmt), Some(title)) = (global_string(lua, "UNIT_PVP_NAME"), title) {
-            let mut out = format_two_strings(&fmt, &title, name);
+        let decorated = decorated_name(
+            |key| global_string(lua, key),
+            u.pvp_rank,
+            u.pvp_team,
+            u.sex == 3,
+            name,
+        );
+        if let Some(mut out) = decorated {
             // Leg A′: the city-protector medal, on its own line, ungendered (`0x60941d push 0`).
             if u.pvp_medal != 0 {
                 if let Some(medal) = global_string(lua, &format!("PVP_MEDAL{}", u.pvp_medal)) {

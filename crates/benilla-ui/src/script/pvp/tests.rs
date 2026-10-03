@@ -355,6 +355,41 @@ fn the_rust_side_title_lookup_is_gendered_where_the_binding_is_not() {
     );
 }
 
+/// The lookup-generic builder the world-text pass snapshots ([`decorated_name`]): the same key
+/// construction and `_FEMALE` fallback, and a plain `None` where the builder declines.
+#[test]
+fn the_lookup_generic_builder_resolves_the_same_keys() {
+    let strings: std::collections::HashMap<&str, &str> = [
+        ("UNIT_PVP_NAME", "%s %s"),
+        ("PVP_RANK_9_1", "Sergeant Major"),
+        ("PVP_RANK_9_1_FEMALE", "Sergeant Major (f)"),
+        ("PVP_RANK_9_0", "Senior Sergeant"),
+    ]
+    .into();
+    let lookup = |key: &str| strings.get(key).map(|value| (*value).to_string());
+    assert_eq!(
+        decorated_name(lookup, 9, 1, false, "Bob").as_deref(),
+        Some("Sergeant Major Bob"),
+        "rank first, name second"
+    );
+    assert_eq!(
+        decorated_name(lookup, 9, 1, true, "Bob").as_deref(),
+        Some("Sergeant Major (f) Bob"),
+        "the female twin wins"
+    );
+    assert_eq!(
+        decorated_name(lookup, 9, 0, false, "Bob").as_deref(),
+        Some("Senior Sergeant Bob"),
+        "team 0 keys the Horde list"
+    );
+    assert_eq!(decorated_name(lookup, 0, 1, false, "Bob"), None, "unranked");
+    assert_eq!(
+        decorated_name(lookup, 6, 1, false, "Bob"),
+        None,
+        "a key the install lacks declines"
+    );
+}
+
 /// The panes' `if not rankName` fallback needs a nil, not an empty string or a raise.
 #[test]
 fn a_missing_rank_global_reads_nil_not_empty() {
