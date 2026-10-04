@@ -355,7 +355,7 @@ fn the_rust_side_title_lookup_is_gendered_where_the_binding_is_not() {
     );
 }
 
-/// The lookup-generic builder the world-text pass snapshots ([`decorated_name`]): the same key
+/// The lookup-generic builder the world-text pass runs ([`decorated_name`]): the same key
 /// construction and `_FEMALE` fallback, and a plain `None` where the builder declines.
 #[test]
 fn the_lookup_generic_builder_resolves_the_same_keys() {

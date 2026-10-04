@@ -133,7 +133,8 @@ impl super::UiScript {
             self.lua(),
             RankTitle {
                 rank,
-                team: team as i8,
+                // Past `i8` names no key, the lookup's own miss.
+                team: i8::try_from(team).ok()?,
                 female,
             },
         )
@@ -240,7 +241,8 @@ pub struct RankTitle {
 
 /// The same title gendered, `0x612bf0`: it passes 2 (male) or 3 (female) to `0x703bf0`, which
 /// asks FrameXML's `GetText` to append `_FEMALE` for 3 (the engine never builds that key), and
-/// retries ungendered on a miss (`0x612c2d`). Used by `UnitPVPName` and the credit line.
+/// retries ungendered on a miss (`0x612c2d`). The credit line's lookup; `UnitPVPName` and the
+/// overhead name reach the same keys through [`decorated_name`].
 fn rank_title_gendered(lua: &Lua, title: RankTitle) -> Option<String> {
     rank_title(&|key| global_string(lua, key), title)
 }
@@ -284,8 +286,8 @@ fn format_two_strings(fmt: &str, a: &str, b: &str) -> String {
 /// The install keys a name-line rank prefix can resolve: `UNIT_PVP_NAME` and every
 /// `PVP_RANK_<rank>_<team>[_FEMALE]` for ranks 1..=19 and both team digits. The range reaches 19
 /// because the builder is range-unchecked and the install's `PVP_RANK_19_*` names the racial
-/// "Leader", past the player rank byte's 0..=18. The world-text pass snapshots them off the VM,
-/// which it cannot reach; `UnitPVPName` looks them up live.
+/// "Leader", past the player rank byte's 0..=18. The world-text pass, which runs without the VM,
+/// reads them off each VM once; `UnitPVPName` looks them up live.
 pub fn pvp_name_global_keys() -> Vec<String> {
     let mut keys = Vec::with_capacity(1 + 19 * 2 * 2);
     keys.push("UNIT_PVP_NAME".to_string());
@@ -299,8 +301,9 @@ pub fn pvp_name_global_keys() -> Vec<String> {
 }
 
 /// `0x609370`'s ranked-player leg over a string lookup: `UNIT_PVP_NAME` filled rank first, the
-/// same builder [`pvp_name`] runs for `UnitPVPName`. `None` for rank 0, a missing title or a
-/// missing template — the two misses the builder declines on.
+/// same builder [`pvp_name`] runs for `UnitPVPName`. `None` for rank 0, or a title or template
+/// the lookup lacks, where the callers keep the plain name: the reference prints a missing title
+/// as `""` (`" " + name`), which a playable race's 0..=18 rank never reaches in the stock strings.
 pub fn decorated_name(
     lookup: impl Fn(&str) -> Option<String>,
     key: RankTitle,
