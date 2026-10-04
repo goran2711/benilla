@@ -14,14 +14,14 @@ use benilla_ui::script::SpellTooltipView;
 
 use super::spell_deps::{Changes, Deps, RangeSeen, Reagents, Seen, UnitField};
 use super::spell_feed::{build_view, reagent_state, PetInputs, ViewCaster, ViewCtx};
-use super::tests::{real_spells, TestCtx};
+use super::tests::TestCtx;
 use crate::items::Items;
 use crate::net::{NetCommands, ObjectStore, Objects};
 use crate::spell::usable::{
     slot_item_cached, worn_slots_read, SlotItem, EQUIPMENT_MASK, EQUIPMENT_SLOTS,
 };
 use crate::spell::{ModsDiff, SpellModifiers};
-use crate::ui_action::Spells;
+use crate::ui_action::{real_spells, Spells};
 use crate::ui_items::TestObjects;
 use benilla_formats::{RangeUnit, UnitMotion};
 

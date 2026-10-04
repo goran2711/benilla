@@ -4,7 +4,7 @@ use super::spell_feed::{build_view, feed_spell_tooltips, ViewCaster, ViewCtx};
 use super::*;
 use crate::items::Items;
 use crate::net::{NetCommands, ObjectStore, Objects, SelfPlayer};
-use crate::ui_action::{PlayerActions, Spells};
+use crate::ui_action::{real_spells, PlayerActions, Spells};
 
 /// The view alone, for the cell tests; the feed keeps what it read beside it.
 fn spell_tooltip_view(
@@ -103,20 +103,6 @@ impl TestCtx {
         ctx.caster = ViewCaster::Pet(pet);
         ctx
     }
-}
-
-/// The 5875 spell data the view builder reads; `None` skips where the install is absent.
-pub(super) fn real_spells() -> Option<Spells> {
-    let data = benilla_formats::wow_data_or_skip!(None);
-    let mut chain = benilla_formats::open_chain(&data).expect("open chain");
-    Some(Spells {
-        catalog: benilla_formats::load_spell_catalog(&mut chain).expect("Spell.dbc"),
-        forms: benilla_formats::load_shapeshift_forms(&mut chain).expect("forms"),
-        ranges: benilla_formats::load_spell_ranges(&mut chain).expect("ranges"),
-        cast_times: benilla_formats::load_spell_cast_times(&mut chain).expect("cast times"),
-        durations: benilla_formats::load_spell_durations(&mut chain).expect("durations"),
-        radii: benilla_formats::load_spell_radii(&mut chain).expect("radii"),
-    })
 }
 
 /// A unit's fields: level (34) and base mana (162).

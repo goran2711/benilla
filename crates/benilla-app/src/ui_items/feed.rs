@@ -1717,6 +1717,7 @@ mod tests {
              this return"
         );
     }
+    use crate::ui_action::real_spells;
     use benilla_protocol::messages::ItemSpellEntry;
     use benilla_ui::script::{ContainerState, UiScript};
     use std::collections::HashMap;
@@ -1930,23 +1931,6 @@ mod tests {
         assert_eq!(charges_count(&[]), 0);
         // A leading sentinel slot does not mask a later pool.
         assert_eq!(charges_count(&[slot(433, -1), slot(4057, -10)]), 10);
-    }
-
-    /// The real spell rows; `None` skips where the install is absent.
-    fn real_spells() -> Option<crate::ui_action::Spells> {
-        let data = benilla_formats::wow_data_or_skip!(None);
-        let mut chain = benilla_formats::open_chain(&data).expect("open chain");
-        Some(crate::ui_action::Spells {
-            catalog: benilla_formats::load_spell_catalog(&mut chain).expect("Spell.dbc"),
-            forms: benilla_formats::load_shapeshift_forms(&mut chain)
-                .expect("SpellShapeshiftForm.dbc"),
-            ranges: benilla_formats::load_spell_ranges(&mut chain).expect("SpellRange.dbc"),
-            cast_times: benilla_formats::load_spell_cast_times(&mut chain)
-                .expect("SpellCastTimes.dbc"),
-            durations: benilla_formats::load_spell_durations(&mut chain)
-                .expect("SpellDuration.dbc"),
-            radii: benilla_formats::load_spell_radii(&mut chain).expect("SpellRadius.dbc"),
-        })
     }
 
     /// On the real Spell.dbc, an undescribed spell such as a key's `Opening` builds no trigger
