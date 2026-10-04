@@ -90,6 +90,15 @@ fn spell_desc_text(
     }
 }
 
+/// What the `$`-tokens read of the player beside the modifiers: the skills the per-level terms
+/// scale by, and the gender byte `$g`/`$G` branch on (`0x508214`).
+type TokenReads = (crate::spell::SkillSnapshot, u8);
+
+fn token_reads(me: Option<&ObjectStore>) -> TokenReads {
+    let gender = me.and_then(|s| s.0.unit_gender()).unwrap_or(0);
+    (crate::spell::skill_snapshot(me), gender)
+}
+
 /// Only descriptions with substitution tokens can change when the caster's spell mods change.
 fn spell_has_mod_tokens(spells: Option<&crate::ui_action::Spells>, id: u32) -> bool {
     spells
@@ -259,7 +268,7 @@ pub(super) fn feed_item_sets(
         crate::ui_script::VmMemo<std::collections::HashMap<u32, benilla_ui::script::ItemSetView>>,
     >,
     mut mod_sensitive: Local<crate::ui_script::VmMemo<HashSet<u32>>>,
-    mut last_skills: Local<crate::ui_script::VmMemo<Option<crate::spell::SkillSnapshot>>>,
+    mut last_reads: Local<crate::ui_script::VmMemo<Option<TokenReads>>>,
 ) {
     let Some(mut script) = script else {
         return;
@@ -270,11 +279,12 @@ pub(super) fn feed_item_sets(
     for id in script.take_item_set_asks() {
         pending.entry(id).or_default();
     }
-    // The `$`-tokens' per-level terms follow the player's skills.
-    let skills = Some(crate::spell::skill_snapshot(me));
-    let skills_changed = *last_skills.get(&script) != skills;
-    *last_skills.get(&script) = skills;
-    if spell_mods.is_changed() || skills_changed {
+    // The `$`-tokens follow the player's skills and gender.
+    let reads = token_reads(me);
+    let gender = reads.1;
+    let reads_changed = last_reads.get(&script).as_ref() != Some(&reads);
+    *last_reads.get(&script) = Some(reads);
+    if spell_mods.is_changed() || reads_changed {
         for &id in mod_sensitive.iter() {
             pending.entry(id).or_default();
         }
@@ -318,7 +328,7 @@ pub(super) fn feed_item_sets(
                         spell,
                         &skill,
                         None,
-                        &|| me.and_then(|s| s.0.unit_gender()).unwrap_or(0),
+                        &|| gender,
                         Some(&spell_mods),
                         &global,
                     )
@@ -405,7 +415,7 @@ pub(super) fn feed_item_stats(
     mut pending: Local<crate::ui_script::VmMemo<std::collections::HashSet<u32>>>,
     mut mod_sensitive: Local<crate::ui_script::VmMemo<HashSet<u32>>>,
     mut last_home: Local<crate::ui_script::VmMemo<Option<String>>>,
-    mut last_skills: Local<crate::ui_script::VmMemo<Option<crate::spell::SkillSnapshot>>>,
+    mut last_reads: Local<crate::ui_script::VmMemo<Option<TokenReads>>>,
 ) {
     let Some(mut script) = script else {
         return;
@@ -414,10 +424,11 @@ pub(super) fn feed_item_stats(
     let mod_sensitive = mod_sensitive.get(&script);
     let last_home = last_home.get(&script);
     let me = self_q.single().ok();
-    // The `$`-tokens' per-level terms follow the player's skills.
-    let skills = Some(crate::spell::skill_snapshot(me));
-    let skills_changed = *last_skills.get(&script) != skills;
-    *last_skills.get(&script) = skills;
+    // The `$`-tokens follow the player's skills and gender.
+    let reads = token_reads(me);
+    let gender = reads.1;
+    let reads_changed = last_reads.get(&script).as_ref() != Some(&reads);
+    *last_reads.get(&script) = Some(reads);
     // `GetBindLocation()`'s push, here so it and the `$z` token share one name, and ahead of the
     // pending gate below: the bind point can arrive while the feed idles.
     let home_area: Option<&str> = home_bind
@@ -434,7 +445,7 @@ pub(super) fn feed_item_stats(
 
     pending.extend(items.take_fresh());
     pending.extend(script.take_item_stat_asks());
-    if spell_mods.is_changed() || skills_changed {
+    if spell_mods.is_changed() || reads_changed {
         pending.extend(mod_sensitive.iter().copied());
     }
     if pending.is_empty() {
@@ -477,7 +488,7 @@ pub(super) fn feed_item_stats(
                         &skill,
                         skill_catalog,
                         home_area,
-                        &|| me.and_then(|s| s.0.unit_gender()).unwrap_or(0),
+                        &|| gender,
                         factions.as_deref().map(|f| f.catalog()),
                         sub_classes.as_deref().map(|s| &s.0),
                         classes.as_deref().map(|c| &c.0),
@@ -1992,5 +2003,17 @@ mod tests {
         };
         assert!(line(1).contains("the mage and her allies"), "{}", line(1));
         assert!(line(0).contains("the mage and his allies"), "{}", line(0));
+    }
+
+    /// The item feeds re-substitute a held `$`-text when what the tokens read moves: the gender
+    /// byte `$g`/`$G` branch on (`0x508214`), and no other byte of `UNIT_FIELD_BYTES_0`.
+    #[test]
+    fn the_token_reads_move_with_the_gender_byte_alone() {
+        let store = |bytes: u32| {
+            crate::net::ObjectStore(benilla_protocol::ObjectFields::from_pairs(&[(36, bytes)]))
+        };
+        let male = super::token_reads(Some(&store(4 | 1 << 8)));
+        assert_ne!(super::token_reads(Some(&store(4 | 1 << 8 | 1 << 16))), male);
+        assert_eq!(super::token_reads(Some(&store(1 | 2 << 8 | 1 << 24))), male);
     }
 }
