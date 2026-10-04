@@ -48,9 +48,6 @@ pub(super) struct ViewCtx<'a, 'w, 's> {
     pub(super) home_area: Option<&'a str>,
     /// The caster's shapeshift form, which the required-form line's colour reads (`0x52f1f2`).
     pub(super) form: u8,
-    /// The active player's gender byte, the `$g`/`$G` branch's input (`0x508214`). Lazily asked
-    /// only where a branch expands, so only the branch's views record the field dep.
-    pub(super) gender_of: &'a dyn Fn() -> u8,
     /// The active player.
     pub(super) store: Option<&'a ObjectStore>,
     /// Whom the level terms and the cost read: the player or its pet. The form and the reaches
@@ -115,9 +112,10 @@ pub(super) fn build_view(
         deps.borrow_mut().home = true;
         home
     };
-    let gender_of = || {
+    // `$g`/`$G` read the active player's gender byte (`0x508214`), a pet view's too.
+    let gender = || {
         deps.borrow_mut().gender = true;
-        (vctx.gender_of)()
+        vctx.store.and_then(|s| s.0.unit_gender()).unwrap_or(0)
     };
     // `0x6e3130` for this spell: the level the cost's and the cast time's per-level terms read.
     let pet_level = |pet| d.skill_level(ViewCaster::pet_skill_value(pet));
@@ -129,9 +127,7 @@ pub(super) fn build_view(
         lookup: &lookup,
         mods: Some(vctx.spell_mods),
         unmodified_points: false,
-        // The `$g`/`$G` branch reads the active player (`0x508189`-`0x5081a4`), never the pet,
-        // so a pet view's caster stays out of it.
-        gender: &gender_of,
+        gender: &gender,
         home_area: &home_area,
         global: vctx.get,
         printf: &crate::ui_script::token_printf,
@@ -701,7 +697,6 @@ pub(super) fn feed_spell_tooltips(
         let mut vctx = ViewCtx {
             home_area: home_area.as_deref(),
             form: self_store.map_or(0, |s| s.0.unit_shapeshift_form()),
-            gender_of: &|| self_store.and_then(|s| s.0.unit_gender()).unwrap_or(0),
             store: self_store,
             caster: ViewCaster::Player,
             range_caster: caster_unit,

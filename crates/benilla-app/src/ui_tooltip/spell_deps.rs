@@ -279,9 +279,8 @@ impl RangeSeen {
 pub(super) struct Seen {
     /// The bind point `$z` names.
     home: Option<String>,
-    /// The active player's gender byte, the `$g`/`$G` branch's input (`0x508214`); only views
-    /// whose text has a branch read it, so a change rebuilds those alone.
-    gender: Option<u8>,
+    /// The gender byte `$g`/`$G` branch on (`0x508214`), 0 without a player as the views read it.
+    gender: u8,
     /// The form the required-form line's colour follows (`0x52f1e3`).
     form: u8,
     /// The skills the descriptions' per-level terms scale by ([`crate::spell::skill_snapshot`]).
@@ -309,7 +308,7 @@ impl Seen {
     ) -> Self {
         Seen {
             home: home.map(str::to_string),
-            gender: player.and_then(|s| s.0.unit_gender()),
+            gender: player.and_then(|s| s.0.unit_gender()).unwrap_or(0),
             form: player.map_or(0, |s| s.0.unit_shapeshift_form()),
             skills: crate::spell::skill_snapshot(player),
             worn: player
