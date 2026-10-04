@@ -16,12 +16,14 @@
 //!   prefixes, the a4 rank prefix (`UnitNamePlayerPVPTitle`, bit `0x20`) and name, and `<Guild>`.
 //!   The guild (a5) and subname (a6) slots share the format `"\n<%s>"` (`0x860f9c`) and are never
 //!   both reached; a5 alone is CVar-gated (`0x609085`).
-//! - The a4 rank prefix is `0x609370`'s ranked-player leg: `UNIT_PVP_NAME` filled rank first,
-//!   `PVP_RANK_<rank>_<team>` off the unit's public `PLAYER_BYTES_3` byte 3 and its race's team
-//!   digit, and never a creature's.
+//! - The a4 slot is `0x609370`'s ranked-player leg (A, `0x6093a5`): `UNIT_PVP_NAME` filled rank
+//!   first, `PVP_RANK_<rank>_<team>` off the unit's public `PLAYER_BYTES_3` byte 3 and its race's
+//!   team digit, and never a creature's.
 //!
-//! Not built: the city-protector line the same builder appends for a set `PLAYER_BYTES_3` byte 2
-//! (`PVP_MEDAL<n>`, which vmangos's `.title` sets); a7 and a8 have no cross-realm wire here.
+//! Not built: `0x609370`'s civilian leg (`0x609449`, `PVP_RANK_CIVILIAN` and a space before a
+//! hostile PvP-flagged civilian NPC's name) and its city-protector line (`0x6093ef`, `"\n"` and
+//! `PVP_MEDAL<n>` for a set `PLAYER_BYTES_3` byte 2, which vmangos's `.character citytitle` sets);
+//! a7 and a8 have no cross-realm wire here.
 
 use std::collections::HashMap;
 
@@ -86,28 +88,34 @@ fn flag_prefix(player_flags: u32) -> String {
         .collect()
 }
 
-/// The install strings the a4 rank prefix resolves (`UNIT_PVP_NAME` and the `PVP_RANK_*` titles),
-/// snapshotted off the VM once: the world-text pass runs without it, and `0x609370` reads the same
-/// keys live. Limit: the snapshot is the boot VM's `GlobalStrings.lua`, so an addon that redefines
-/// a key later moves the live readers (`UnitPVPName`, the unit tooltip) and not this copy.
+/// The strings the a4 rank prefix resolves (`UNIT_PVP_NAME` and the `PVP_RANK_*` titles), read
+/// off each VM once, where `0x609370` reads them live at every rebuild: the world-text pass runs
+/// without the VM, and a VM reaches the world only with its FrameXML and addon load done.
 #[derive(Resource, Default)]
 pub(crate) struct PvpNameStrings {
-    /// Set on the first VM frame whether or not the install had the keys: a retry would say the
-    /// same thing every frame.
-    sealed: bool,
+    /// The [`benilla_ui::script::UiScript::session`] the strings were read from; `None` before the
+    /// first VM.
+    session: Option<u64>,
+    /// Moves when a read changes the strings, so a line built from the old ones rebuilds.
+    generation: u64,
     strings: HashMap<String, String>,
 }
 
 impl PvpNameStrings {
-    /// Read [`benilla_ui::script::pvp_name_global_keys`] off the VM and seal. Every present key is
-    /// kept; a missing one is the builder's own miss.
+    /// Read [`benilla_ui::script::pvp_name_global_keys`] off `script` and note its session. Every
+    /// present key is kept; a missing one is the builder's own miss.
     fn load(&mut self, script: &benilla_ui::script::UiScript) {
-        for key in benilla_ui::script::pvp_name_global_keys() {
-            if let Some(value) = benilla_ui::strings::global(script.lua(), &key) {
-                self.strings.insert(key, value);
-            }
+        self.session = Some(script.session());
+        let strings: HashMap<String, String> = benilla_ui::script::pvp_name_global_keys()
+            .into_iter()
+            .filter_map(|key| {
+                benilla_ui::strings::global(script.lua(), &key).map(|value| (key, value))
+            })
+            .collect();
+        if strings != self.strings {
+            self.strings = strings;
+            self.generation += 1;
         }
-        self.sealed = true;
     }
 
     /// Whether the snapshot holds the template: no install strings, no prefix, as `UnitPVPName`
@@ -127,21 +135,24 @@ impl PvpNameStrings {
 }
 
 /// The a4 rank-prefix inputs a live line was built with: the steady frame compares these fields,
-/// so a rank change or a CVar flip rebuilds without reading the install strings again.
+/// so a rank change, a CVar flip or a new VM's different strings rebuild without reading the
+/// strings again.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct TitleKey {
     /// The rank, team and gender the title lookup keyed on
     /// ([`benilla_ui::script::RankTitle`]).
     title: benilla_ui::script::RankTitle,
-    /// The a4 bit (`0x20`) was set and the install strings were loaded when the line was built.
+    /// The a4 bit (`0x20`) was set and the strings held the template when the line was built.
     on: bool,
+    /// The [`PvpNameStrings`] generation the line was built from.
+    strings: u64,
 }
 
 /// The a4 inputs for one unit, cheap enough for the steady frame: `None` off a player or before
 /// its descriptor arrives.
 fn title_key(
     cfg: &NameConfig,
-    strings_ready: bool,
+    strings: &PvpNameStrings,
     net: &NetEntity,
     store: Option<&ObjectStore>,
 ) -> Option<TitleKey> {
@@ -155,8 +166,20 @@ fn title_key(
                 .map_or(-1, crate::ui_unit::race_pvp_team),
             female: store.0.unit_gender() == Some(1),
         },
-        on: cfg.player_pvp_title && strings_ready,
+        on: cfg.player_pvp_title && strings.ready(),
+        strings: strings.generation,
     })
+}
+
+/// `0x608f50`'s main name line: the a1-a3 flag tags glued on with no separator, then the a4 slot,
+/// `0x609370`'s ranked-player leg where `key` is on and the builder resolves, else the plain name.
+fn name_line(flags: u32, key: Option<TitleKey>, strings: &PvpNameStrings, name: &str) -> String {
+    let decorated = key
+        .filter(|key| key.on)
+        .and_then(|key| strings.decorated(key, name));
+    let mut line = flag_prefix(flags);
+    line.push_str(decorated.as_deref().unwrap_or(name));
+    line
 }
 
 /// A live plate: its entity and stack, and the inputs the stack was built from, so a steady frame
@@ -350,7 +373,7 @@ pub(crate) fn drive_nameplates(
         Res<crate::ui_party::GroupState>,
         // The UnitName* CVar mask.
         Res<NameConfig>,
-        // The install's rank strings, snapshotted off the VM ([`PvpNameStrings`]).
+        // The rank strings, read off the current VM ([`PvpNameStrings`]).
         Res<PvpNameStrings>,
     ),
     names: Res<NameCache>,
@@ -469,8 +492,8 @@ pub(crate) fn drive_nameplates(
             0
         };
         // The AFK slot `0x5ec9e0` alone emits `<AFK>` for the active player while the mirror
-        // `[0xb6e5cc]` is set, whatever the bit (`0x5ec9fd`). Folded into `flags` so
-        // `lines_current` and `flag_prefix` agree.
+        // `[0xb6e5cc]` is set, whatever the bit (`0x5ec9fd`). Folded into `flags`, so the cache
+        // compare and [`name_line`] read the same bit.
         let flags = if is_self && mirror.is_afk() {
             flags | 0x2
         } else {
@@ -511,7 +534,7 @@ pub(crate) fn drive_nameplates(
         };
 
         seen.insert(entity);
-        let key = title_key(&name_cfg, pvp_strings.ready(), net, store);
+        let key = title_key(&name_cfg, &pvp_strings, net, store);
         match plates.live.get(&entity) {
             // The steady frame compares the inputs in place, allocating nothing; a rebuild from
             // these inputs is the stack `LiveName` holds.
@@ -527,17 +550,7 @@ pub(crate) fn drive_nameplates(
                         e.despawn();
                     }
                 }
-                // `0x609370`'s a4 leg over the snapshot; a declining builder keeps the plain name.
-                let body = key
-                    .filter(|key| key.on)
-                    .and_then(|key| pvp_strings.decorated(key, name))
-                    .unwrap_or_else(|| name.to_owned());
-                let prefix = flag_prefix(flags);
-                let mut lines = vec![if prefix.is_empty() {
-                    body
-                } else {
-                    format!("{prefix}{body}")
-                }];
+                let mut lines = vec![name_line(flags, key, &pvp_strings, name)];
                 if let Some(bracketed) = bracketed {
                     lines.push(format!("<{bracketed}>"));
                 }
@@ -699,20 +712,19 @@ pub(crate) fn on_cvar(ev: On<crate::cvars::CvarChanged>, mut names: ResMut<NameC
     }
 }
 
-/// Snapshot [`PvpNameStrings`] off the VM once it holds `GlobalStrings.lua`, which the boot VM
-/// loads before the first frame: a VM-less test never seals, and no frame after the first pays
-/// more than the sealed check.
+/// Read [`PvpNameStrings`] off a VM the first frame it is in the world. Every VM is installed
+/// whole, outside `Update` (the boot VM with `GlobalStrings.lua` run, a world VM after its FrameXML
+/// and addon load), so the read sees what the load defined; any other frame pays one compare.
 fn load_pvp_title_strings(
     script: Option<NonSend<benilla_ui::script::UiScript>>,
     mut strings: ResMut<PvpNameStrings>,
 ) {
-    if strings.sealed {
-        return;
-    }
     let Some(script) = script else {
         return;
     };
-    strings.load(&script);
+    if strings.session != Some(script.session()) {
+        strings.load(&script);
+    }
 }
 
 impl Plugin for NameplatesPlugin {
@@ -724,8 +736,8 @@ impl Plugin for NameplatesPlugin {
         .init_resource::<Nameplates>()
         .init_resource::<NameConfig>()
         .init_resource::<PvpNameStrings>()
-        // Nothing the tick produced, so it drains on the tick's far side; the snapshot lands by
-        // the frame after the VM exists and the plate rebuilds when `ready` flips.
+        // A VM holder, so after the tick; before the driver, so a new VM's strings reach the lines
+        // the frame it arrives.
         .add_systems(
             Update,
             load_pvp_title_strings.after(crate::ui_script::UiInput),
@@ -859,59 +871,111 @@ mod tests {
 
     const RED: Color = Color::linear_rgb(1.0, 0.0, 0.0);
 
+    /// The rank strings as [`PvpNameStrings::load`] reads them off a VM that ran `src`.
+    fn strings_off_a_vm(src: &str) -> PvpNameStrings {
+        let script = benilla_ui::script::UiScript::new().expect("a VM");
+        script.run(src).expect("globals set");
+        let mut strings = PvpNameStrings::default();
+        strings.load(&script);
+        strings
+    }
+
+    /// A streamed unit's kind and descriptor.
+    fn unit(kind: EntityKind, fields: &[(u16, u32)]) -> (NetEntity, ObjectStore) {
+        use benilla_protocol::messages::ObjectFields;
+        (
+            NetEntity {
+                kind,
+                display_id: None,
+                scale: 1.0,
+            },
+            ObjectStore(ObjectFields::from_pairs(fields)),
+        )
+    }
+
+    /// `UNIT_FIELD_BYTES_0` (36): race human, class warrior, male.
+    const HUMAN_MALE: (u16, u32) = (36, 0x0101);
+    /// `PLAYER_BYTES_3` (195) byte 3: the current honor rank, internal 7.
+    const RANK_7: (u16, u32) = (195, 7 << 24);
+
     /// The a4 inputs off the descriptor: the public rank byte, the race's team digit, the sex and
-    /// the CVar's snapshot-ready bit; a creature has no a4 leg.
+    /// the CVar's strings-ready bit; a creature has no a4 leg.
     #[test]
     fn title_key_reads_the_rank_byte_the_race_and_the_cvar() {
-        use benilla_protocol::messages::ObjectFields;
-        let net = |kind| NetEntity {
-            kind,
-            display_id: None,
-            scale: 1.0,
-        };
         let cfg = NameConfig::default();
-        // Human (race 1 → team 1), `PLAYER_BYTES_3` byte 3 rank 7.
-        let human = ObjectStore(ObjectFields::from_pairs(&[(36, 0x0101), (195, 7 << 24)]));
-        let key = title_key(&cfg, true, &net(EntityKind::Player), Some(&human)).unwrap();
+        let ready = strings_off_a_vm(r#"UNIT_PVP_NAME = "%s %s""#);
+        let bare = PvpNameStrings::default();
+        // Human (race 1 → team 1), rank 7.
+        let (net, human) = unit(EntityKind::Player, &[HUMAN_MALE, RANK_7]);
+        let key = title_key(&cfg, &ready, &net, Some(&human)).unwrap();
         assert_eq!(
             (key.title.rank, key.title.team, key.title.female, key.on),
             (7, 1, false, true)
         );
         // Orc (race 2 → team 0), female; the CVar off, and the strings unloaded, each drop the bit.
-        let orc = ObjectStore(ObjectFields::from_pairs(&[(36, 0x010102), (195, 7 << 24)]));
-        let orc = title_key(&cfg, true, &net(EntityKind::Player), Some(&orc)).unwrap();
+        let (_, orc) = unit(EntityKind::Player, &[(36, 0x010102), RANK_7]);
+        let orc = title_key(&cfg, &ready, &net, Some(&orc)).unwrap();
         assert_eq!((orc.title.team, orc.title.female), (0, true));
         let off = NameConfig {
             player_pvp_title: false,
-            ..NameConfig::default()
+            ..cfg
         };
+        assert!(!title_key(&off, &ready, &net, Some(&human)).unwrap().on);
+        assert!(!title_key(&cfg, &bare, &net, Some(&human)).unwrap().on);
+        let (creature, _) = unit(EntityKind::Unit, &[]);
         assert!(
-            !title_key(&off, true, &net(EntityKind::Player), Some(&human))
-                .unwrap()
-                .on
-        );
-        assert!(
-            !title_key(&cfg, false, &net(EntityKind::Player), Some(&human))
-                .unwrap()
-                .on
-        );
-        assert!(
-            title_key(&cfg, true, &net(EntityKind::Unit), Some(&human)).is_none(),
+            title_key(&cfg, &ready, &creature, Some(&human)).is_none(),
             "a creature has no a4"
         );
     }
 
-    /// The snapshot's decoration is `0x609370`'s: title first, `None` off rank 0 or a key the
-    /// install lacks.
+    /// The composed main line, from the descriptor up: `0x608f50` glues the a1-a3 tags onto
+    /// `0x609370`'s a4 with no separator; the CVar off, rank 0 or a creature keep the plain name.
+    #[test]
+    fn the_name_line_glues_the_flag_tags_onto_the_ranked_name() {
+        let strings = strings_off_a_vm(
+            r#"UNIT_PVP_NAME = "%s %s"
+               PVP_RANK_7_1 = "Sergeant"
+               PVP_RANK_7_1_FEMALE = "Sergeant (f)""#,
+        );
+        let line = |cfg: &NameConfig, (net, store): &(NetEntity, ObjectStore), flags, name| {
+            name_line(
+                flags,
+                title_key(cfg, &strings, net, Some(store)),
+                &strings,
+                name,
+            )
+        };
+        const AFK: u32 = 0x2;
+        let cfg = NameConfig::default();
+        let sergeant = unit(EntityKind::Player, &[HUMAN_MALE, RANK_7]);
+        assert_eq!(line(&cfg, &sergeant, AFK, "Bob"), "<AFK>Sergeant Bob");
+        let off = NameConfig {
+            player_pvp_title: false,
+            ..cfg
+        };
+        assert_eq!(
+            line(&off, &sergeant, AFK, "Bob"),
+            "<AFK>Bob",
+            "the CVar off"
+        );
+        let unranked = unit(EntityKind::Player, &[HUMAN_MALE]);
+        assert_eq!(line(&cfg, &unranked, 0, "Bob"), "Bob", "rank 0");
+        // The same bytes on a creature: the kind gates the leg, not the descriptor.
+        let wolf = unit(EntityKind::Unit, &[HUMAN_MALE, RANK_7]);
+        assert_eq!(line(&cfg, &wolf, 0, "Young Wolf"), "Young Wolf");
+        // `UNIT_FIELD_BYTES_0` byte 2 = 1: the `_FEMALE` twin.
+        let female = unit(EntityKind::Player, &[(36, 0x01_0101), RANK_7]);
+        assert_eq!(line(&cfg, &female, 0, "Alice"), "Sergeant (f) Alice");
+    }
+
+    /// The decoration is `0x609370`'s: title first, `None` off rank 0 or a key the install lacks.
     #[test]
     fn the_snapshot_decorates_a_ranked_name() {
-        let mut strings = PvpNameStrings::default();
-        strings
-            .strings
-            .insert("UNIT_PVP_NAME".into(), "%s %s".into());
-        strings
-            .strings
-            .insert("PVP_RANK_7_1".into(), "Sergeant".into());
+        let strings = strings_off_a_vm(
+            r#"UNIT_PVP_NAME = "%s %s"
+               PVP_RANK_7_1 = "Sergeant""#,
+        );
         let key = TitleKey {
             title: benilla_ui::script::RankTitle {
                 rank: 7,
@@ -919,6 +983,7 @@ mod tests {
                 female: false,
             },
             on: true,
+            strings: strings.generation,
         };
         assert_eq!(
             strings.decorated(key, "Bob").as_deref(),
@@ -955,8 +1020,7 @@ mod tests {
         );
     }
 
-    /// The loader takes the install's keys off the VM and seals, so the world-text pass never
-    /// needs the VM again.
+    /// The loader takes only the a4 keys off the VM and notes the session it read.
     #[test]
     fn the_snapshot_load_takes_the_install_strings() {
         let script = benilla_ui::script::UiScript::new().expect("a VM");
@@ -972,7 +1036,7 @@ mod tests {
             .expect("globals set");
         let mut strings = PvpNameStrings::default();
         strings.load(&script);
-        assert!(strings.sealed);
+        assert_eq!(strings.session, Some(script.session()));
         assert!(strings.ready(), "the template is present");
         let female = TitleKey {
             title: benilla_ui::script::RankTitle {
@@ -981,6 +1045,7 @@ mod tests {
                 female: true,
             },
             on: true,
+            strings: strings.generation,
         };
         assert_eq!(
             strings.decorated(female, "Bob").as_deref(),
@@ -991,6 +1056,49 @@ mod tests {
             strings.strings.get("GARBAGE_KEY"),
             None,
             "only the a4 keys are read"
+        );
+    }
+
+    /// A new VM is a new read: a world VM whose addon renames a title reaches the line, and the key
+    /// the plate cache compares moves with it; a VM read already, or one with the same strings,
+    /// leaves the key alone, so no plate rebuilds.
+    #[test]
+    fn a_new_vm_session_re_reads_the_rank_strings() {
+        use bevy::ecs::system::RunSystemOnce;
+        let vm = |src: &str| {
+            let script = benilla_ui::script::UiScript::new().expect("a VM");
+            script.run(src).expect("globals set");
+            script
+        };
+        let stock = r#"UNIT_PVP_NAME = "%s %s"
+                       PVP_RANK_7_1 = "Sergeant""#;
+        let (net, store) = unit(EntityKind::Player, &[HUMAN_MALE, RANK_7]);
+        let cfg = NameConfig::default();
+        let built = |world: &World| {
+            let strings = world.resource::<PvpNameStrings>();
+            let key = title_key(&cfg, strings, &net, Some(&store));
+            (key, name_line(0, key, strings, "Bob"))
+        };
+        let mut world = World::new();
+        world.init_resource::<PvpNameStrings>();
+        world.insert_non_send_resource(vm(stock));
+        world.run_system_once(load_pvp_title_strings).unwrap();
+        let (boot_key, boot_line) = built(&world);
+        assert_eq!(boot_line, "Sergeant Bob");
+
+        world.run_system_once(load_pvp_title_strings).unwrap();
+        assert!(built(&world).0 == boot_key, "the same VM: the key holds");
+        world.insert_non_send_resource(vm(stock));
+        world.run_system_once(load_pvp_title_strings).unwrap();
+        assert!(built(&world).0 == boot_key, "a new VM, the same strings");
+
+        world.insert_non_send_resource(vm(&format!("{stock}\nPVP_RANK_7_1 = \"Feldwebel\"")));
+        world.run_system_once(load_pvp_title_strings).unwrap();
+        let (key, line) = built(&world);
+        assert_eq!(line, "Feldwebel Bob", "the new VM's title reaches the line");
+        assert!(
+            key != boot_key,
+            "the cached key moves, so the live plate rebuilds"
         );
     }
 
