@@ -14,10 +14,6 @@ const WOLF_FACTION: u32 = 32;
 /// surface, so its overhead name projects onto the water beyond it.
 pub(super) const NAME_WATER_POS: [f32; 3] = [-9512.97, -331.29, 61.4];
 
-/// The `name-rank` fixture's subject: the `vplates` wolf's dry spot in Northshire, so the two
-/// overhead-name captures read apart by subject and not by place.
-pub(super) const NAME_RANK_POS: [f32; 3] = [-8949.95, -132.49, 83.9];
-
 /// The lighting matrix's chest: `GameObjectDisplayInfo` 259, `TreasureChest01.mdx`. GameObject
 /// guids carry the `0xF110` high word; the default descriptor holds the closed rest pose.
 const CHEST_DISPLAY: u32 = 259;
@@ -1316,9 +1312,10 @@ pub(super) fn seed_ui_fixture(
                 crate::net::Guid(SELF_GUID),
                 Transform::from_translation(wow_to_bevy(scenario.eye)),
             ));
-            // The subject: a human player holding rank, `PLAYER_BYTES_3` byte 3
-            // (`PLAYER_BYTES_3_OFFSET_HONOR_RANK`, vmangos `HonorMgr.cpp:904`) at internal 7:
-            // the visual rank 3, "Sergeant" (team 1 off race 1's `ChrRaces` row).
+            // The subject at the `vplates` wolf's dry spot: a human player holding rank,
+            // `PLAYER_BYTES_3` byte 3 (`PLAYER_BYTES_3_OFFSET_HONOR_RANK`, vmangos
+            // `HonorMgr.cpp:900`) at internal 7: the visual rank 3, "Sergeant" (team 1 off race
+            // 1's `ChrRaces` row).
             const RANKED_GUID: u64 = 0x52;
             names.insert_player(RANKED_GUID, "Bob".into(), None);
             commands.spawn((
@@ -1336,7 +1333,7 @@ pub(super) fn seed_ui_fixture(
                     (195, 7 << 24), // PLAYER_BYTES_3 byte 3: the current honor rank, internal 7
                 ])),
                 Transform {
-                    translation: wow_to_bevy(NAME_RANK_POS),
+                    translation: wow_to_bevy(WOLF_POS),
                     ..default()
                 },
                 Visibility::default(),

@@ -2643,8 +2643,8 @@
                                                 this.parentRow = "RowPlayerNames"
                                             </OnLoad></Scripts>
                                         </Frame>
-                                        <!-- The next child of Player Names, check button 23 to its
-                                             21 (`UIOptionsFrame.lua:24`), under the same CVar. -->
+                                        <!-- A child of Player Names on its own CVar, CheckButton23 of
+                                             21 (`UIOptionsFrame.lua:24`), greyed with it (`:703-709`). -->
                                         <Frame name="$parentRowPlayerTitles" inherits="BenillaOptionsCheckboxRowTemplate">
                                             <Anchors>
                                                 <Anchor point="TOPLEFT" relativeTo="$parentRowGuildNames" relativePoint="BOTTOMLEFT"><Offset><AbsDimension x="0" y="-9"/></Offset></Anchor>
