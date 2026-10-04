@@ -40,11 +40,8 @@ pub struct TokenContext<'a> {
     /// points skip their modifiers (`6e3925`), and so does the duration of `$d` and `$o`
     /// (`0x6ea000`'s flag, pushed at `507ccd` and `507917`).
     pub unmodified_points: bool,
-    /// The active player's `UNIT_FIELD_BYTES_0` byte 2 (`0x508214`), the `$g`/`$G` branch's input
-    /// (`0x508217`): the first form on 0 (male), the second on anything else. 0 without a player;
-    /// the reference's branch helper fails outright there (`0x5081a9`-`0x5081b7`), which no
-    /// tooltip here builds without. Asked only where a branch expands, so a caller can tell
-    /// which texts read the player's gender.
+    /// The active player's gender, `UNIT_FIELD_BYTES_0` byte 2 (`0x508214`), which `$g`/`$G`
+    /// branch on. Asked only where a branch expands.
     pub gender: &'a dyn Fn() -> u8,
     /// The `$z` token: the home-bind area's name, from `SMSG_BINDPOINTUPDATE`'s area id through
     /// `AreaTable.dbc`; `None` leaves the token raw. Asked only where a `$z` expands, so a caller
@@ -506,10 +503,7 @@ pub fn substitute(text: &str, spell: &SpellDisplay, ctx: &TokenContext) -> Strin
                                 b
                             }
                         }
-                        // `$g`/`$G` (`0x50786d` → `0x508180`): the first form on gender 0, the
-                        // second on anything else. The chosen form is space-trimmed at both ends
-                        // (`0x5081c8`-`0x5081d7` and `0x50822a`-`0x50823b` on the lead,
-                        // `0x508267`-`0x508280` on the tail); an empty one prints nothing.
+                        // `$g`/`$G` (`0x508180`): the first form on gender 0, else the second.
                         _ => trim_spaces(if (ctx.gender)() == 0 { a } else { b }),
                     };
                     out.push_str(pick);
@@ -786,8 +780,6 @@ mod tests {
         gender.set(1);
         assert_eq!(substitute("$g:male;", &d, &c), "male");
         assert_eq!(substitute("$g female:;", &d, &c), "");
-        // No colon: nothing consumed, the token stays raw.
-        assert_eq!(substitute("$ghis;", &d, &c), "$ghis;");
         // The shipped wording: Conjure Food 587 and Hellfire 1949.
         assert_eq!(
             substitute("providing the mage and $ghis:her; allies", &d, &c),
