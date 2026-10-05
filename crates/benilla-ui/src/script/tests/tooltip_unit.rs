@@ -182,16 +182,17 @@ fn a_pending_name_titles_unknownobject_and_the_answer_replaces_it() {
     assert!(s.take_errors().is_empty());
 }
 
-/// A ranked player's title is decorated by `0x609370`, the builder `UnitPVPName` runs: rank first
-/// through `UNIT_PVP_NAME`, gendered by the unit's sex, off the public rank byte — so an unranked
-/// player and a creature keep the plain name.
+/// The title is decorated by `0x609370` with the flag on (`0x52a1ab`), the builder `UnitPVPName`
+/// runs: a ranked player's rank first through `UNIT_PVP_NAME`, gendered by the unit's sex, and a
+/// city protector's medal on a second line; a civilian kill's `PVP_RANK_CIVILIAN` prefix; anyone
+/// else the plain name.
 #[test]
-fn a_ranked_players_tooltip_titles_the_rank_first() {
+fn the_tooltip_title_is_the_pvp_name() {
     let mut s = script();
     seed_level_strings(&mut s);
     s.set_screen_size(800.0, 600.0);
     s.set_player_req_state(PlayerReqState {
-        level: 1,
+        level: 30,
         ..Default::default()
     });
     let player = |sex: u8, pvp_rank: u8| UnitState {
@@ -212,6 +213,8 @@ fn a_ranked_players_tooltip_titles_the_rank_first() {
         UNIT_PVP_NAME = "%s %s"
         PVP_RANK_7_1 = "Sergeant"
         PVP_RANK_7_1_FEMALE = "Sergeant (f)"
+        PVP_MEDAL1 = "Guardian of Stormwind"
+        PVP_RANK_CIVILIAN = "Civilian"
         local a = CreateFrame("Button", "UF1"); a:SetPoint("CENTER", 0, 0); a:SetWidth(10); a:SetHeight(10)
         local tt = CreateFrame("GameTooltip", "TT")
         tt:SetOwner(a, "ANCHOR_RIGHT")
@@ -240,11 +243,41 @@ fn a_ranked_players_tooltip_titles_the_rank_first() {
         "an unranked player keeps the plain name"
     );
 
+    let mut protector = player(2, 7);
+    protector.pvp_medal = 1;
+    s.set_unit("target", Some(protector));
+    s.run(r#"assert(TT:SetUnit("target") == 1)"#).unwrap();
+    assert_eq!(
+        title(&s),
+        "Sergeant Pfedh\nGuardian of Stormwind",
+        "the medal rides a second line"
+    );
+
     let mut beast = wolf();
     beast.pvp_rank = 7; // a creature carries no rank byte, and must not read one anyway
     s.set_unit("target", Some(beast));
     s.run(r#"assert(TT:SetUnit("target") == 1)"#).unwrap();
-    assert_eq!(title(&s), "Timber Wolf", "creatures never decorate");
+    assert_eq!(title(&s), "Timber Wolf", "a creature takes no rank");
+
+    // Hostile, PvP-flagged, a civilian and grey (`0x612550`): the dishonorable-kill prefix.
+    s.set_unit(
+        "target",
+        Some(UnitState {
+            exists: true,
+            name: Some("Defias Civilian".into()),
+            level: 20,
+            reaction: 2,
+            pvp: true,
+            civilian: true,
+            ..Default::default()
+        }),
+    );
+    s.run(r#"assert(TT:SetUnit("target") == 1)"#).unwrap();
+    assert_eq!(
+        title(&s),
+        "Civilian Defias Civilian",
+        "a civilian kill warns"
+    );
     assert!(s.take_errors().is_empty());
 }
 
