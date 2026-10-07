@@ -69,9 +69,9 @@ const TRAINER_SHAMAN: TrainerSeed = TrainerSeed {
 
 /// Bengus Deepforge, Ironforge's blacksmithing trainer, with the two row shapes a profession
 /// trainer lists: the profession-learn wrapper (2020 teaches 2018, whose own text the row shows)
-/// and a recipe (2756 teaches 2739, whose text comes from the sword it makes). The learn row sorts
-/// into group 1 (`Effect` 44 `SKILL_STEP`) ahead of the recipe's group 2 (`0x4d77b6`), so the
-/// stock window's row-2 selection lands on it.
+/// and a recipe (7820 teaches 7818, whose text is the description of the Silver Rod it makes).
+/// The learn row sorts into group 1 (`Effect` 44 `SKILL_STEP`) ahead of the recipe's group 2
+/// (`0x4d77b6`), so the stock window's row-2 selection lands on it.
 const TRAINER_BLACKSMITH: TrainerSeed = TrainerSeed {
     name: "Bengus Deepforge",
     subname: "Blacksmithing Trainer",
@@ -80,7 +80,7 @@ const TRAINER_BLACKSMITH: TrainerSeed = TrainerSeed {
     bind: 1537, // Ironforge
     rows: &[
         (2020, trainer_spell_state::GREEN, 9, 5), // Apprentice Blacksmith
-        (2756, trainer_spell_state::GREEN, 50, 0), // Copper Shortsword
+        (7820, trainer_spell_state::GREEN, 90, 0), // Silver Rod
     ],
 };
 

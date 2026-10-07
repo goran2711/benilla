@@ -817,10 +817,11 @@ fn service_description_on_real_data_reads_the_profession_learn_row() {
     );
 }
 
-/// On the shipped `Spell.dbc`: 2756 is the recipe wrapper a Blacksmithing trainer lists, 2739 the
-/// recipe it teaches and 2847 the sword it makes, so the row's text is that item's description,
-/// read out of the item cache (`0x4d9cd0`-`0x4d9d22`). The product's own record arrives with the
-/// item query, so the template seeded below stands in for it. Skips without client data.
+/// On the shipped `Spell.dbc`: 7820 is the recipe wrapper a Blacksmithing trainer lists, 7818 the
+/// recipe it teaches and 6338 the Silver Rod it makes, so the row's text is that item's
+/// description, read out of the item cache (`0x4d9cd0`-`0x4d9d22`). The product's record arrives
+/// with the item query, so the template seeded below, with vmangos's text, stands in for it.
+/// Skips without client data.
 #[test]
 fn service_description_on_real_data_reaches_for_the_recipes_product() {
     let data = benilla_formats::wow_data_or_skip!();
@@ -829,11 +830,11 @@ fn service_description_on_real_data_reaches_for_the_recipes_product() {
 
     // Neither the wrapper nor the recipe carries text of its own, so the item is the only source.
     assert_eq!(
-        spells.get(2756).and_then(|d| d.description.as_deref()),
+        spells.get(7820).and_then(|d| d.description.as_deref()),
         None
     );
     assert_eq!(
-        spells.get(2739).and_then(|d| d.description.as_deref()),
+        spells.get(7818).and_then(|d| d.description.as_deref()),
         None
     );
 
@@ -842,7 +843,7 @@ fn service_description_on_real_data_reaches_for_the_recipes_product() {
     let describe = |deps: &Deps| {
         with_text(&spells, 0, 0, None, |text| {
             service_description(
-                &wire(2756, trainer_spell_state::GREEN, 50, 0, 164),
+                &wire(7820, trainer_spell_state::GREEN, 90, 0, 164),
                 TRAINER_TYPE_TRADESKILL,
                 &spells,
                 &deps.items,
@@ -860,19 +861,19 @@ fn service_description_on_real_data_reaches_for_the_recipes_product() {
     );
     assert_eq!(
         deps.queried_entries(),
-        vec![2847],
-        "the description law reached for the crafted sword's template"
+        vec![6338],
+        "the description law reached for the crafted rod's template"
     );
 
     // With the product's record present, its description is the row's text, verbatim.
-    let mut product = crate::items::test_template("Copper Shortsword");
-    product.description = "A sturdy copper blade.".into();
+    let mut product = crate::items::test_template("Silver Rod");
+    product.description = "Needed by Enchanters.".into();
     let landed = {
         let mut deps = Deps::new();
-        deps.items.insert_template(2847, Some(product));
+        deps.items.insert_template(6338, Some(product));
         deps
     };
-    assert_eq!(describe(&landed), "A sturdy copper blade.");
+    assert_eq!(describe(&landed), "Needed by Enchanters.");
 }
 
 #[test]
