@@ -24,11 +24,13 @@ const CHEST_GUID: u64 = (0xF110u64 << 48) | 0x744;
 /// 45°), so `front` shows the lit side and `rear` the unlit one.
 const SUBJECT_YAW: f32 = 2.36;
 
-/// One trainer fixture's canned seed: the trainer's identity, its greeting, the character's
-/// hearthstone bind area, and the wire rows `(spell, state, copper cost, required level)`.
+/// One trainer fixture's canned seed: the trainer's identity, its `SMSG_TRAINER_LIST` type, its
+/// greeting, the character's hearthstone bind area, and the wire rows
+/// `(spell, state, copper cost, required level)`.
 struct TrainerSeed {
     name: &'static str,
     subname: &'static str,
+    trainer_type: u32,
     greeting: &'static str,
     bind: u32,
     rows: &'static [(u32, u8, u32, u8)],
@@ -40,6 +42,7 @@ struct TrainerSeed {
 const TRAINER_WARRIOR: TrainerSeed = TrainerSeed {
     name: "Llane Beshere",
     subname: "Warrior Trainer",
+    trainer_type: 0,
     greeting: "I can train you in the ways of the warrior.",
     bind: 9, // Northshire Valley, where this character's hearthstone is
     rows: &[
@@ -58,9 +61,27 @@ const TRAINER_WARRIOR: TrainerSeed = TrainerSeed {
 const TRAINER_SHAMAN: TrainerSeed = TrainerSeed {
     name: "Sian'tsu",
     subname: "Shaman Trainer",
+    trainer_type: 0,
     greeting: "The spirits are strong within you, shaman.",
     bind: 362, // Razor Hill, a Durotar hearthstone
     rows: &[(1352, trainer_spell_state::GREEN, 4000, 30)],
+};
+
+/// Bengus Deepforge, Ironforge's blacksmithing trainer, with the two row shapes a profession
+/// trainer lists: the profession-learn wrapper (2020 teaches 2018, whose own text the row shows)
+/// and a recipe (2756 teaches 2739, whose text comes from the sword it makes). The learn row sorts
+/// into group 1 (`Effect` 44 `SKILL_STEP`) ahead of the recipe's group 2 (`0x4d77b6`), so the
+/// stock window's row-2 selection lands on it.
+const TRAINER_BLACKSMITH: TrainerSeed = TrainerSeed {
+    name: "Bengus Deepforge",
+    subname: "Blacksmithing Trainer",
+    trainer_type: 2, // a tradeskill trainer
+    greeting: "The forge shapes what the mine provides.",
+    bind: 1537, // Ironforge
+    rows: &[
+        (2020, trainer_spell_state::GREEN, 9, 5), // Apprentice Blacksmith
+        (2756, trainer_spell_state::GREEN, 50, 0), // Copper Shortsword
+    ],
 };
 
 /// Seeds the fixture window's state once the scene is resident; the real feeds push it into the VM
@@ -258,6 +279,7 @@ pub(super) fn seed_ui_fixture(
             let seed = match list {
                 TrainerList::Warrior => &TRAINER_WARRIOR,
                 TrainerList::Shaman => &TRAINER_SHAMAN,
+                TrainerList::Blacksmith => &TRAINER_BLACKSMITH,
             };
             names.insert_creature(
                 NPC_ENTRY,
@@ -273,7 +295,6 @@ pub(super) fn seed_ui_fixture(
                     display_id: 0,
                 }),
             );
-            // The hearthstone bind (`SMSG_BINDPOINTUPDATE`) the `$z` token names.
             home_bind.0 = Some(seed.bind);
             let Some(script) = script.as_mut() else {
                 return;
@@ -305,7 +326,7 @@ pub(super) fn seed_ui_fixture(
                     req_spells: [0; 3],
                 })
                 .collect();
-            trainer.open(NPC_GUID, 0, services, seed.greeting.into());
+            trainer.open(NPC_GUID, seed.trainer_type, services, seed.greeting.into());
         }
         UiFixture::Gossip => {
             names.insert_creature(

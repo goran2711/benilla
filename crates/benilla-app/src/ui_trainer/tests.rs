@@ -789,6 +789,92 @@ fn service_description_on_real_data_reads_astral_recalls_bind_area() {
     );
 }
 
+/// On the shipped `Spell.dbc`: 2020 is the "Apprentice Blacksmith" wrapper a Blacksmithing trainer
+/// lists, teaching 2018 "Blacksmithing" — the profession-learn row whose text is the taught
+/// profession's. Skips without client data.
+#[test]
+fn service_description_on_real_data_reads_the_profession_learn_row() {
+    let data = benilla_formats::wow_data_or_skip!();
+    let mut chain = benilla_formats::open_chain(&data).expect("open chain");
+    let spells = benilla_formats::load_spell_catalog(&mut chain).expect("load Spell");
+
+    // The wrapper carries no text of its own, so the taught profession's is the only one there is.
+    assert_eq!(
+        spells.get(2020).and_then(|d| d.description.as_deref()),
+        None
+    );
+    let svc = resolve_service(
+        &wire(2020, trainer_spell_state::GREEN, 9, 5, 0),
+        TRAINER_TYPE_TRADESKILL,
+        &spells,
+        None,
+        &BTreeSet::new(),
+    );
+    assert_eq!(
+        svc.description,
+        "Allows a Blacksmith to make basic weapons and armor up to a maximum potential skill of \
+         75.  Requires stone and metal found with the mining skill."
+    );
+}
+
+/// On the shipped `Spell.dbc`: 2756 is the recipe wrapper a Blacksmithing trainer lists, 2739 the
+/// recipe it teaches and 2847 the sword it makes, so the row's text is that item's description,
+/// read out of the item cache (`0x4d9cd0`-`0x4d9d22`). The product's own record arrives with the
+/// item query, so the template seeded below stands in for it. Skips without client data.
+#[test]
+fn service_description_on_real_data_reaches_for_the_recipes_product() {
+    let data = benilla_formats::wow_data_or_skip!();
+    let mut chain = benilla_formats::open_chain(&data).expect("open chain");
+    let spells = benilla_formats::load_spell_catalog(&mut chain).expect("load Spell");
+
+    // Neither the wrapper nor the recipe carries text of its own, so the item is the only source.
+    assert_eq!(
+        spells.get(2756).and_then(|d| d.description.as_deref()),
+        None
+    );
+    assert_eq!(
+        spells.get(2739).and_then(|d| d.description.as_deref()),
+        None
+    );
+
+    // The law alone, never through `resolve_service`: the icon law asks for the same template
+    // first, and one ask per pending entry reaches the cache.
+    let describe = |deps: &Deps| {
+        with_text(&spells, 0, 0, None, |text| {
+            service_description(
+                &wire(2756, trainer_spell_state::GREEN, 50, 0, 164),
+                TRAINER_TYPE_TRADESKILL,
+                &spells,
+                &deps.items,
+                &deps.commands,
+                text,
+            )
+        })
+    };
+
+    let deps = Deps::new();
+    assert_eq!(
+        describe(&deps),
+        "",
+        "nothing to show until the product's template lands"
+    );
+    assert_eq!(
+        deps.queried_entries(),
+        vec![2847],
+        "the description law reached for the crafted sword's template"
+    );
+
+    // With the product's record present, its description is the row's text, verbatim.
+    let mut product = crate::items::test_template("Copper Shortsword");
+    product.description = "A sturdy copper blade.".into();
+    let landed = {
+        let mut deps = Deps::new();
+        deps.items.insert_template(2847, Some(product));
+        deps
+    };
+    assert_eq!(describe(&landed), "A sturdy copper blade.");
+}
+
 #[test]
 fn snapshot_is_none_when_closed_and_lists_services_when_open() {
     let spells = empty_catalog();

@@ -27,6 +27,9 @@ pub(super) enum TrainerList {
     /// A shaman trainer's Astral Recall row (wrapper 1352 teaches 556), the shipped spell whose
     /// description carries the `$z` token, so the shot pins the bind area's name too.
     Shaman,
+    /// A profession trainer's two row shapes: the learn wrapper whose text is the taught
+    /// profession's, and a recipe whose text is its product's.
+    Blacksmith,
 }
 
 /// A UI window opened with synthetic state that mirrors what the server sends, so the capture
@@ -968,6 +971,16 @@ pub(super) const ON_DEMAND: &[Scenario] = &[
         look: GROUND_LOOK,
         minute: 720,
         ui: Some(UiFixture::Trainer(TrainerList::Shaman)),
+    },
+    // A blacksmithing trainer's window: the profession-learn row, whose text is the taught
+    // profession's, with a recipe row beneath it.
+    Scenario {
+        name: "ui-trainer-blacksmith",
+        map: Some(MAP_AZEROTH),
+        eye: GROUND_EYE,
+        look: GROUND_LOOK,
+        minute: 720,
+        ui: Some(UiFixture::Trainer(TrainerList::Blacksmith)),
     },
 ];
 

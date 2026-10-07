@@ -123,7 +123,6 @@ pub(super) fn service_description(
     let Some(d) = spells.get(wire.spell) else {
         return String::new();
     };
-    // The first slot either learn effect occupies, resolvable trigger or not.
     let learn = (0..3).find(|&i| {
         matches!(
             d.effects[i],
@@ -138,7 +137,6 @@ pub(super) fn service_description(
         }
     };
     let wire_text = d.description.as_deref().filter(|t| !t.is_empty());
-    // A used mount-trainer row goes straight to the taught spell.
     if !(trainer_type == TRAINER_TYPE_MOUNT && wire.state == trainer_spell_state::GRAY) {
         if let Some(t) = wire_text {
             return substitute(t, d, learn.map_or(text.player, caster));
@@ -163,17 +161,7 @@ pub(super) fn service_description(
             }
         }
     }
-    wire_text.map_or_else(String::new, |t| {
-        substitute(
-            t,
-            d,
-            if d.effects[0] == SPELL_EFFECT_LEARN_PET_SPELL {
-                text.pet
-            } else {
-                text.player
-            },
-        )
-    })
+    wire_text.map_or_else(String::new, |t| substitute(t, d, caster(0)))
 }
 
 /// The list builder `0x4d7560`'s group key (`0x4d7786`). Type 2 resolves no skill line, so no row

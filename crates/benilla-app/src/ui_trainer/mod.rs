@@ -163,7 +163,6 @@ fn resolve_service(
     icons: Option<&ItemDisplays>,
     items: &Items,
     commands: &NetCommands,
-    // The `$`-token reads the description expands over: the player's, and the pet's.
     text: &ServiceText,
     // The VM's own `GlobalStrings.lua`, for the group header labels.
     get: &dyn Fn(&str) -> Option<String>,
@@ -226,8 +225,6 @@ fn resolve_service(
         subtext: display.and_then(|d| d.rank.clone()),
         // Over the wire spell, like the name and subtext ([`service_icon`]).
         texture: service_icon(wire.spell, trainer_type, spells, icons, items, commands),
-        // `GetTrainerServiceDescription`'s text ([`service_description`]): the wire spell's own
-        // Description or the taught spell's, its `$s1`/`$o1`/`$d`/`$a1` tokens substituted.
         description: service_description(wire, trainer_type, spells, items, commands, text),
         cost: wire.cost,
         prof_first_rank: wire.is_primary_prof_first_rank,
@@ -313,7 +310,6 @@ pub(crate) fn feed_trainer(
     spells: Option<Res<Spells>>,
     skill_lines: Option<Res<SkillLines>>,
     mut re_eval: ReEvalInputs,
-    // The service descriptions' `$`-tokens: the caster's tables and the `$z` bind point.
     desc: DescriptionReads,
     // A tradeskill row shows its created item's icon: the template cache and `ItemDisplayInfo.dbc`.
     icons: Option<Res<ItemDisplays>>,
@@ -432,10 +428,8 @@ pub(crate) fn feed_trainer(
             &player,
         );
     }
-    // The service descriptions' `$`-tokens, the reads the spell tooltip's description makes
-    // (`0x52f717`): the caster's skill in the expanded spell's line, its gender, the spell
-    // modifiers, the `$z` bind point — and the pet's level for a `LEARN_PET_SPELL` row, whose
-    // selector reads charm-else-summon (`0x6e3159`), the unit pet views are built against.
+    // The spell tooltip's description reads (`0x52f717`), and `0x6e3159`'s charm-else-summon for
+    // a `LEARN_PET_SPELL` row.
     let store = self_player.map(|(_, store)| store);
     let pet_level = store
         .and_then(|s| s.0.unit_pet_guid())
