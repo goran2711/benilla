@@ -431,12 +431,10 @@ pub(crate) fn feed_trainer(
     // The spell tooltip's description reads (`0x52f717`), and `0x6e3159`'s charm-else-summon for
     // a `LEARN_PET_SPELL` row.
     let store = self_player.map(|(_, store)| store);
-    let pet_level = store
+    let pet = store
         .and_then(|s| s.0.unit_pet_guid())
         .and_then(|guid| re_eval.index.0.get(&guid).copied())
-        .and_then(|entity| re_eval.stores.get(entity).ok())
-        .and_then(|pet| pet.0.unit_level())
-        .unwrap_or(0);
+        .and_then(|entity| re_eval.stores.get(entity).ok());
     let fresh = {
         let gender = store.and_then(|s| s.0.unit_gender()).unwrap_or(0);
         let home_area: Option<&str> = desc
@@ -446,9 +444,7 @@ pub(crate) fn feed_trainer(
             .and_then(|id| desc.area_names.as_deref()?.0.resolve(id as i32));
         let player_skill =
             |id: u32| crate::spell::spell_skill_value(store, Some(&skill_lines.catalog), id);
-        // The pet's `[vtbl+0xa8]`, `0x60cd80`: `UNIT_FIELD_LEVEL × 5`, which the token engine's
-        // level derivation caps and divides by 5.
-        let pet_skill = |_: u32| pet_level.saturating_mul(5);
+        let pet_skill = |_: u32| crate::spell::pet_skill_value(pet.map(|p| &p.0));
         let get = |key: &str| {
             script
                 .lua()
